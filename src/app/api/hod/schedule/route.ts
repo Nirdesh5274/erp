@@ -37,6 +37,21 @@ const querySchema = z.object({
   limit: z.coerce.number().int().min(1).max(200).optional(),
 });
 
+function buildLectureConflictOrClause(roomId: string, facultyId: string, substituteFacultyId?: string) {
+  const clauses = [
+    `room_id.eq.${roomId}`,
+    `faculty_id.eq.${facultyId}`,
+    `substitute_faculty_id.eq.${facultyId}`,
+  ];
+
+  if (substituteFacultyId) {
+    clauses.push(`faculty_id.eq.${substituteFacultyId}`);
+    clauses.push(`substitute_faculty_id.eq.${substituteFacultyId}`);
+  }
+
+  return clauses.join(",");
+}
+
 interface LectureRow {
   id: string;
   department_id: string;
@@ -82,7 +97,7 @@ export async function GET(request: Request) {
     }
 
     const now = new Date();
-    const defaultFrom = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+    const defaultFrom = now;
     const defaultTo = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
     const windowFrom = parsedQuery.from ? new Date(parsedQuery.from) : defaultFrom;
     const windowTo = parsedQuery.to ? new Date(parsedQuery.to) : defaultTo;
@@ -108,6 +123,39 @@ export async function GET(request: Request) {
     const rooms = roomsRes.data ?? [];
     const faculties = (facultiesRes.data ?? []).filter((faculty) => !departmentId || faculty.department_id === departmentId);
     const subjects = (subjectsRes.data ?? []).filter((subject) => !departmentId || subject.department_id === departmentId);
+
+    const facultyIds = faculties.map((faculty) => faculty.id as string);
+    let facultySubjectMap: Record<string, string[]> = {};
+
+    if (facultyIds.length > 0) {
+      const { data: facultySubjectRows, error: facultySubjectError } = await supabase
+        .from("faculty_subjects")
+        .select("faculty_id,subject_id")
+        .in("faculty_id", facultyIds);
+
+      if (facultySubjectError) return apiError(facultySubjectError.message, 500);
+
+      const subjectNameById = new Map<string, string>();
+      for (const subject of subjects) {
+        subjectNameById.set(subject.id as string, subject.name as string);
+      }
+
+      const grouped = new Map<string, Set<string>>();
+      for (const row of facultySubjectRows ?? []) {
+        const facultyId = row.faculty_id as string;
+        const subjectId = row.subject_id as string;
+        const name = subjectNameById.get(subjectId);
+        if (!facultyId || !name) continue;
+
+        const current = grouped.get(facultyId) ?? new Set<string>();
+        current.add(name);
+        grouped.set(facultyId, current);
+      }
+
+      facultySubjectMap = Object.fromEntries(
+        Array.from(grouped.entries()).map(([facultyId, names]) => [facultyId, Array.from(names)]),
+      );
+    }
 
     let lectureQuery = supabase
       .from("lectures")
@@ -307,6 +355,7 @@ export async function GET(request: Request) {
       rooms,
       faculties,
       subjects,
+      facultySubjectMap,
       lectures: payload,
       nextCursor: payload[payload.length - 1]?.id ?? null,
     });
@@ -326,7 +375,12 @@ export async function POST(request: Request) {
 
     const startsAt = new Date(body.startsAt);
     const endsAt = new Date(body.endsAt);
+    const now = new Date();
     if (endsAt <= startsAt) return apiError("End time must be after start time", 400);
+    if (startsAt < now) return apiError("Cannot schedule lectures in the past", 400);
+    if (body.substituteFacultyId && body.substituteFacultyId === body.facultyId) {
+      return apiError("Substitute faculty must be different from primary faculty", 400);
+    }
 
     let departmentId = body.departmentId;
     if (ctx.role === "HOD" && ctx.userId) {
@@ -340,18 +394,31 @@ export async function POST(request: Request) {
       if (departmentId !== body.departmentId) return apiError("HOD can only schedule inside their department", 403);
     }
 
+    if (body.substituteFacultyId) {
+      const { data: substituteRow, error: substituteError } = await supabase
+        .from("users")
+        .select("id,role,department_id")
+        .eq("id", body.substituteFacultyId)
+        .eq("college_id", ctx.collegeId)
+        .single();
+
+      if (substituteError) return apiError(substituteError.message, 400);
+      if (substituteRow.role !== "Faculty") return apiError("Substitute must be a faculty member", 400);
+      if (substituteRow.department_id !== departmentId) return apiError("Substitute must belong to the same department", 400);
+    }
+
     const { data: conflicts, error: conflictsError } = await supabase
       .from("lectures")
       .select("id")
       .eq("college_id", ctx.collegeId)
-      .or(`room_id.eq.${body.roomId},faculty_id.eq.${body.facultyId}`)
+      .or(buildLectureConflictOrClause(body.roomId, body.facultyId, body.substituteFacultyId))
       .lt("starts_at", endsAt.toISOString())
       .gt("ends_at", startsAt.toISOString())
       .limit(1);
 
     if (conflictsError) return apiError(conflictsError.message, 500);
     if ((conflicts ?? []).length > 0) {
-      return apiError("Schedule conflict found (room or faculty busy)", 400);
+      return apiError("Schedule conflict found (room/faculty/substitute busy)", 400);
     }
 
     const { data: room, error: roomError } = await supabase
@@ -381,7 +448,7 @@ export async function POST(request: Request) {
         subject_id: body.subjectId ?? null,
         faculty_id: body.facultyId,
         substitute_faculty_id: body.substituteFacultyId ?? null,
-        is_substitute: body.isSubstitute ?? false,
+        is_substitute: Boolean(body.substituteFacultyId),
         room_id: body.roomId,
         starts_at: startsAt.toISOString(),
         ends_at: endsAt.toISOString(),
@@ -431,8 +498,14 @@ export async function PATCH(request: Request) {
 
     if (lectureError) return apiError(lectureError.message, 404);
 
-    if (ctx.role === "HOD" && ctx.userId && body.departmentId && body.departmentId !== lecture.department_id) {
-      return apiError("HOD can only manage their department", 403);
+    if (ctx.role === "HOD") {
+      const hodDepartmentId = ctx.departmentId ?? null;
+      if (hodDepartmentId && hodDepartmentId !== lecture.department_id) {
+        return apiError("HOD can only manage their department", 403);
+      }
+      if (body.departmentId && body.departmentId !== lecture.department_id) {
+        return apiError("HOD can only manage their department", 403);
+      }
     }
 
     const nextRoomId = body.roomId ?? lecture.room_id;
@@ -441,9 +514,31 @@ export async function PATCH(request: Request) {
     const nextSubjectId = body.subjectId ?? lecture.subject_id;
     const nextStartsAt = body.startsAt ?? lecture.starts_at;
     const nextEndsAt = body.endsAt ?? lecture.ends_at;
+    const now = new Date();
 
     if (new Date(nextEndsAt) <= new Date(nextStartsAt)) {
       return apiError("End time must be after start time", 400);
+    }
+    if (new Date(nextStartsAt) < now) {
+      return apiError("Cannot schedule lectures in the past", 400);
+    }
+    if (nextSubstituteId && nextSubstituteId === nextFacultyId) {
+      return apiError("Substitute faculty must be different from primary faculty", 400);
+    }
+
+    if (nextSubstituteId) {
+      const { data: substituteRow, error: substituteError } = await supabase
+        .from("users")
+        .select("id,role,department_id")
+        .eq("id", nextSubstituteId)
+        .eq("college_id", ctx.collegeId)
+        .single();
+
+      if (substituteError) return apiError(substituteError.message, 400);
+      if (substituteRow.role !== "Faculty") return apiError("Substitute must be a faculty member", 400);
+      if (substituteRow.department_id !== lecture.department_id) {
+        return apiError("Substitute must belong to the same department", 400);
+      }
     }
 
     const { data: conflicts, error: conflictsError } = await supabase
@@ -451,14 +546,14 @@ export async function PATCH(request: Request) {
       .select("id")
       .eq("college_id", ctx.collegeId)
       .neq("id", lecture.id)
-      .or(`room_id.eq.${nextRoomId},faculty_id.eq.${nextFacultyId}`)
+      .or(buildLectureConflictOrClause(nextRoomId, nextFacultyId, nextSubstituteId ?? undefined))
       .lt("starts_at", nextEndsAt)
       .gt("ends_at", nextStartsAt)
       .limit(1);
 
     if (conflictsError) return apiError(conflictsError.message, 500);
     if ((conflicts ?? []).length > 0) {
-      return apiError("Schedule conflict found (room or faculty busy)", 400);
+      return apiError("Schedule conflict found (room/faculty/substitute busy)", 400);
     }
 
     const { data: room, error: roomError } = await supabase
@@ -485,7 +580,7 @@ export async function PATCH(request: Request) {
       room_id: nextRoomId,
       faculty_id: nextFacultyId,
       substitute_faculty_id: nextSubstituteId,
-      is_substitute: body.isSubstitute ?? lecture.is_substitute ?? false,
+      is_substitute: Boolean(nextSubstituteId),
       subject_id: nextSubjectId,
       starts_at: nextStartsAt,
       ends_at: nextEndsAt,

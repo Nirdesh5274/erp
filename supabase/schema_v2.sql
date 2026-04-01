@@ -293,7 +293,7 @@ begin
 		if v_ratio < 0.6 then
 			insert into monitoring_alerts (college_id, alert_type, room_id, lecture_id, message, severity)
 			values (v_lecture.college_id, 'low_attendance', v_lecture.room_id, v_lecture.id,
-							format('Attendance low: %.0f%%', v_ratio * 100), 'warning')
+						format('Attendance low: %s%%', round(v_ratio * 100)), 'warning')
 			on conflict do nothing;
 		end if;
 	end if;

@@ -28,6 +28,10 @@ interface ReportSummary {
   attendancePercent: number;
   roomUsagePercent: number;
   totalRooms: number;
+  transactionsTodayCount: number;
+  transactionsTodayAmount: number;
+  dailyTransactions: Array<{ date: string; amount: number; count: number }>;
+  recentTransactions: Array<{ id: string; amount: number; paymentMode: string; referenceNumber: string | null; paidAt: string }>;
 }
 
 interface AttendanceSummary {
@@ -343,6 +347,48 @@ export default function AdminAnalyticsPage() {
               ))}
             </tbody>
           </table>
+        </div>
+      </SectionCard>
+
+      <SectionCard title="Transactions report" description="Daily collection and latest transactions">
+        <div className="mb-4 grid gap-4 md:grid-cols-2">
+          <StatCard
+            label="Transactions Today"
+            value={summary?.transactionsTodayCount ?? 0}
+            trend="Receipt entries"
+          />
+          <StatCard
+            label="Today Collection"
+            value={`INR ${(summary?.transactionsTodayAmount ?? 0).toLocaleString()}`}
+            trend="Captured payments"
+          />
+        </div>
+
+        <div className="grid gap-6 lg:grid-cols-2">
+          <div className="h-64">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={summary?.dailyTransactions ?? []}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                <XAxis dataKey="date" tick={{ fontSize: 11 }} />
+                <YAxis tick={{ fontSize: 12 }} />
+                <Tooltip />
+                <Legend />
+                <Bar dataKey="amount" name="Amount" fill="#0ea5e9" radius={[6, 6, 0, 0]} />
+                <Bar dataKey="count" name="Count" fill="#22c55e" radius={[6, 6, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+
+          <div className="space-y-2 text-sm">
+            {(summary?.recentTransactions ?? []).map((tx) => (
+              <div key={tx.id} className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
+                <p className="font-semibold text-slate-900">INR {tx.amount.toLocaleString()} · {tx.paymentMode}</p>
+                <p className="text-xs text-slate-600">Ref: {tx.referenceNumber ?? "—"}</p>
+                <p className="text-xs text-slate-500">{new Date(tx.paidAt).toLocaleString()}</p>
+              </div>
+            ))}
+            {(summary?.recentTransactions?.length ?? 0) === 0 ? <p className="text-xs text-slate-600">No transactions yet.</p> : null}
+          </div>
         </div>
       </SectionCard>
 

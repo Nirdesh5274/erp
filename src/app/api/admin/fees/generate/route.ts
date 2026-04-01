@@ -4,7 +4,7 @@ import { ensureRole, getRequestContext } from "@/lib/requestContext";
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 
 const postSchema = z.object({
-  templateId: z.string().uuid(),
+  templateId: z.string().uuid().optional(),
   studentId: z.string().uuid(),
   dueDate: z.string().date().optional(),
   graceDays: z.number().int().nonnegative().optional(),
@@ -23,27 +23,74 @@ export async function POST(request: Request) {
     const body = postSchema.parse(await request.json());
     const supabase = getSupabaseAdmin();
 
+    const { data: studentRow, error: studentError } = await supabase
+      .from("students")
+      .select("id,slot_id")
+      .eq("id", body.studentId)
+      .eq("college_id", ctx.collegeId)
+      .single();
+
+    if (studentError || !studentRow) return apiError("Student not found", 404);
+
+    let resolvedTemplateId = body.templateId ?? null;
+
+    if (!resolvedTemplateId) {
+      const { data: slotTemplate, error: slotTemplateError } = await supabase
+        .from("fee_templates")
+        .select("id")
+        .eq("college_id", ctx.collegeId)
+        .eq("slot_id", studentRow.slot_id)
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (slotTemplateError && !slotTemplateError.message.toLowerCase().includes("slot_id")) {
+        return apiError(slotTemplateError.message, 500);
+      }
+
+      resolvedTemplateId = slotTemplate?.id ?? null;
+    }
+
+    if (!resolvedTemplateId) return apiError("No fee template mapped for student slot", 400);
+
     const { data: tpl, error: tplError } = await supabase
       .from("fee_templates")
-      .select("id,components,installments")
-      .eq("id", body.templateId)
+      .select("id,components,installments,slot_id")
+      .eq("id", resolvedTemplateId)
       .eq("college_id", ctx.collegeId)
       .maybeSingle();
-    if (tplError || !tpl) return apiError("Template not found", 404);
 
-    const components = (tpl.components as FeeComponent[] | null) ?? [];
+    let template = tpl as { id: string; components: unknown; installments: unknown; slot_id?: string | null } | null;
+    if (tplError && tplError.message.toLowerCase().includes("slot_id")) {
+      const fallback = await supabase
+        .from("fee_templates")
+        .select("id,components,installments")
+        .eq("id", resolvedTemplateId)
+        .eq("college_id", ctx.collegeId)
+        .maybeSingle();
+      if (fallback.error || !fallback.data) return apiError("Template not found", 404);
+      template = { ...fallback.data, slot_id: null };
+    }
+    if (!template || (tplError && !tplError.message.toLowerCase().includes("slot_id"))) return apiError("Template not found", 404);
+
+    const templateSlotId = template.slot_id ?? null;
+    if (templateSlotId && templateSlotId !== studentRow.slot_id) {
+      return apiError("Selected template is not mapped to this student's slot", 400);
+    }
+
+    const components = (template.components as FeeComponent[] | null) ?? [];
     const totalAmount = components.reduce((sum, comp) => sum + Number(comp.amount ?? 0), 0);
 
     const payload = {
       college_id: ctx.collegeId,
       student_id: body.studentId,
-      fee_template_id: body.templateId,
+      fee_template_id: resolvedTemplateId,
       amount: totalAmount,
       paid_amount: 0,
       due_amount: totalAmount,
       status: "Pending",
-      components: tpl.components ?? [],
-      installments: tpl.installments ?? [],
+      components: template.components ?? [],
+      installments: template.installments ?? [],
       due_date: body.dueDate ?? null,
       grace_days: body.graceDays ?? 0,
     };

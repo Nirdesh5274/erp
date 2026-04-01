@@ -49,6 +49,11 @@ interface MonitoringAlertRow {
   created_at: string | null;
 }
 
+interface AlertLectureRow {
+  id: string;
+  ends_at: string | null;
+}
+
 interface StatusLogRow {
   id: string;
   room_id: string | null;
@@ -263,7 +268,35 @@ export async function GET() {
       }
     }
 
-    const alerts = (alertRows ?? []).map((row) => {
+    const alertLectureIds = Array.from(
+      new Set(
+        ((alertRows ?? []) as MonitoringAlertRow[])
+          .map((row) => row.lecture_id)
+          .filter(Boolean) as string[],
+      ),
+    );
+
+    const alertLectureEndMap = new Map<string, string | null>();
+    if (alertLectureIds.length > 0) {
+      const { data: alertLectureRows, error: alertLectureError } = await supabase
+        .from("lectures")
+        .select("id,ends_at")
+        .in("id", alertLectureIds);
+
+      if (alertLectureError) return apiError(alertLectureError.message, 500);
+
+      for (const row of (alertLectureRows ?? []) as AlertLectureRow[]) {
+        alertLectureEndMap.set(row.id, row.ends_at ?? null);
+      }
+    }
+
+    const alerts = (alertRows ?? []).filter((row) => {
+      const alert = row as MonitoringAlertRow;
+      if (!alert.lecture_id) return true;
+      const endsAt = alertLectureEndMap.get(alert.lecture_id);
+      if (!endsAt) return false;
+      return new Date(endsAt).getTime() <= now.getTime();
+    }).map((row) => {
       const alert = row as MonitoringAlertRow;
       return {
         id: alert.id,

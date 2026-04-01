@@ -17,6 +17,10 @@ interface FeeRow {
   reference_number: string | null;
   receipt_number: string | null;
   generated_at: string;
+  components?: Array<{ name: string; amount: number }>;
+  late_fine_accumulated?: number;
+  scholarship_amount?: number;
+  currency?: string;
 }
 
 interface ReceiptRow {
@@ -94,14 +98,7 @@ export default function StudentFeesPage() {
   };
 
   const handleDownloadReceipt = (receipt: ReceiptRow) => {
-    const content = `Receipt ${receipt.receipt_number ?? receipt.id}\nAmount: INR ${receipt.amount}\nMode: ${receipt.payment_mode}\nRef: ${receipt.reference_number ?? "N/A"}\nPaid at: ${new Date(receipt.paid_at).toLocaleString()}`;
-    const blob = new Blob([content], { type: "application/pdf" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = `${receipt.receipt_number ?? receipt.id}.pdf`;
-    link.click();
-    URL.revokeObjectURL(url);
+    window.open(`/api/fees/receipt/${receipt.id}`, "_blank", "noopener,noreferrer");
   };
 
   return (
@@ -132,6 +129,9 @@ export default function StudentFeesPage() {
                 </button>
               </div>
               <p className="mt-2 text-xs text-slate-500">Mode: {fee.payment_mode ?? "—"} · Ref: {fee.reference_number ?? "—"} · Receipt: {fee.receipt_number ?? "—"}</p>
+              <p className="mt-1 text-xs text-slate-500">
+                Late fine: INR {Number(fee.late_fine_accumulated ?? 0).toLocaleString()} · Discount: INR {Number(fee.scholarship_amount ?? 0).toLocaleString()}
+              </p>
             </div>
           ))}
           {outstanding.length === 0 ? <p className="text-xs text-slate-600">No pending dues. Great job!</p> : null}
@@ -156,6 +156,18 @@ export default function StudentFeesPage() {
                   <p>Receipt: {fee.receipt_number ?? "—"}</p>
                 </div>
               </div>
+              {fee.components?.length ? (
+                <div className="mt-2 rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-700">
+                  <p className="mb-1 font-semibold text-slate-800">Fee structure</p>
+                  <ul className="space-y-1">
+                    {fee.components.map((component, idx) => (
+                      <li key={`${component.name}-${idx}`}>
+                        {component.name}: INR {Number(component.amount ?? 0).toLocaleString()}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
               {receiptByFee.get(fee.id)?.length ? (
                 <div className="mt-2 space-y-1 text-xs text-slate-700">
                   {receiptByFee.get(fee.id)!.map((r) => (

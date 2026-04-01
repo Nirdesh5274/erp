@@ -30,6 +30,7 @@ interface AttendanceSummary {
 
 interface FeesResponse {
   fees: Array<{ id: string; due_amount: number; due_date: string | null; status: string }>;
+  receipts: Array<{ id: string; amount: number; payment_mode: string; receipt_number: string | null; paid_at: string }>;
 }
 
 interface ScheduleResponse {
@@ -130,6 +131,11 @@ export default function StudentDashboardPage() {
   }, [fees]);
 
   const todayLectures = schedule?.lectures ?? [];
+  const recentReceipts = useMemo(() => {
+    return [...(fees?.receipts ?? [])]
+      .sort((a, b) => new Date(b.paid_at).getTime() - new Date(a.paid_at).getTime())
+      .slice(0, 3);
+  }, [fees?.receipts]);
 
   const attendanceList = attendance?.perSubject ?? [];
   const monthDays = useMemo(() => {
@@ -233,6 +239,25 @@ export default function StudentDashboardPage() {
               </a>
             </SectionCard>
           ) : null}
+
+          <SectionCard title="Recent receipts" description="Download payment receipts">
+            <div className="space-y-2 text-xs text-slate-700">
+              {recentReceipts.map((receipt) => (
+                <div key={receipt.id} className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
+                  <p className="font-semibold text-slate-900">{receipt.receipt_number ?? receipt.id.slice(0, 8)}</p>
+                  <p>INR {Number(receipt.amount).toLocaleString()} · {receipt.payment_mode}</p>
+                  <p className="text-slate-500">{new Date(receipt.paid_at).toLocaleDateString()}</p>
+                  <button
+                    onClick={() => window.open(`/api/fees/receipt/${receipt.id}`, "_blank", "noopener,noreferrer")}
+                    className="mt-1 rounded-md bg-slate-900 px-2 py-1 text-white"
+                  >
+                    Download receipt
+                  </button>
+                </div>
+              ))}
+              {recentReceipts.length === 0 ? <p>No receipts found.</p> : null}
+            </div>
+          </SectionCard>
         </div>
       </div>
 

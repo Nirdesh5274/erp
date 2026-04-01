@@ -42,6 +42,34 @@ function formatMinutes(value: number | null) {
 export default function AdminMonitoringPage() {
   const { rooms, alerts, events, loading, error, occupiedCount, refresh, overrideRoom, isRealtimeConnected } = useRoomMonitoring();
 
+  const timelineByHour = useMemo(() => {
+    const grouped = new Map<string, { label: string; items: typeof events }>();
+
+    for (const event of events.slice(0, 40)) {
+      const at = new Date(event.changedAt);
+      const hourKey = `${at.getFullYear()}-${at.getMonth()}-${at.getDate()}-${at.getHours()}`;
+      if (!grouped.has(hourKey)) {
+        grouped.set(hourKey, {
+          label: at.toLocaleString([], {
+            month: "short",
+            day: "numeric",
+            hour: "2-digit",
+            hour12: true,
+          }),
+          items: [],
+        });
+      }
+
+      grouped.get(hourKey)?.items.push(event);
+    }
+
+    return Array.from(grouped.entries()).map(([key, value]) => ({
+      key,
+      label: value.label,
+      items: value.items,
+    }));
+  }, [events]);
+
   const stats = useMemo(
     () => [
       { label: "Rooms Occupied", value: occupiedCount, trend: `${rooms.length} total` },
@@ -75,7 +103,7 @@ export default function AdminMonitoringPage() {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="space-y-1">
           <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Live Monitoring</p>
-          <h1 className="text-2xl font-black text-slate-900">Room grid and attendance pulse</h1>
+          <h1 className="text-xl font-black text-slate-900 sm:text-2xl">Room grid and attendance pulse</h1>
           <div className="flex items-center gap-2 text-xs text-slate-600">
             <span className={`h-2.5 w-2.5 rounded-full ${isRealtimeConnected ? "animate-pulse bg-emerald-500" : "bg-slate-300"}`} />
             {isRealtimeConnected ? "Realtime connected" : "Realtime reconnecting"}
@@ -84,7 +112,7 @@ export default function AdminMonitoringPage() {
         <button
           type="button"
           onClick={() => refresh()}
-          className="inline-flex items-center gap-2 rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-slate-800"
+          className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-slate-800 sm:w-auto"
         >
           <RefreshCw size={16} /> Refresh
         </button>
@@ -126,7 +154,7 @@ export default function AdminMonitoringPage() {
                 </div>
 
                 <div className="mt-4 space-y-2 text-sm text-slate-700">
-                  <p className="flex items-center gap-2 text-slate-600">
+                  <p className="flex flex-wrap items-center gap-2 text-slate-600">
                     <Clock size={16} className="text-slate-500" /> {formatTime(room.startsAt)} → {formatTime(room.endsAt)}
                     <span className="text-xs text-slate-500">({formatMinutes(room.timeRemainingMinutes)})</span>
                   </p>
@@ -180,32 +208,37 @@ export default function AdminMonitoringPage() {
         {events.length === 0 ? (
           <p className="text-sm text-slate-500">No recent changes.</p>
         ) : (
-          <div className="space-y-3">
-            {events.slice(0, 16).map((event) => {
-              const badgeClass = statusStyles[event.status] ?? statusStyles.vacant;
-              return (
-                <div
-                  key={event.id}
-                  className="flex items-start justify-between rounded-xl border border-slate-200 bg-white px-4 py-3 shadow-sm"
-                >
-                  <div className="flex items-start gap-3">
-                    <span className={`mt-1 inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs font-semibold ${badgeClass}`}>
-                      <Activity size={14} /> {event.status.toUpperCase()}
-                    </span>
-                    <div>
-                      <p className="text-sm font-semibold text-slate-900">{event.roomName || "Room"}</p>
-                      <p className="text-xs text-slate-500">
-                        {event.roomType ? `${event.roomType} • ` : ""}
-                        {new Date(event.changedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
-                        {event.changedBy ? ` by ${event.changedBy}` : ""}
-                      </p>
-                      {event.reason ? <p className="text-xs text-slate-600">{event.reason}</p> : null}
+          <div className="space-y-4">
+            {timelineByHour.map((group) => (
+              <div key={group.key} className="space-y-2">
+                <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">{group.label}</p>
+                {group.items.map((event) => {
+                  const badgeClass = statusStyles[event.status] ?? statusStyles.vacant;
+                  return (
+                    <div
+                      key={event.id}
+                      className="flex flex-col gap-2 rounded-xl border border-slate-200 bg-white px-4 py-3 shadow-sm sm:flex-row sm:items-start sm:justify-between"
+                    >
+                      <div className="flex items-start gap-3">
+                        <span className={`mt-1 inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs font-semibold ${badgeClass}`}>
+                          <Activity size={14} /> {event.status.toUpperCase()}
+                        </span>
+                        <div>
+                          <p className="text-sm font-semibold text-slate-900">{event.roomName || "Room"}</p>
+                          <p className="text-xs text-slate-500">
+                            {event.roomType ? `${event.roomType} • ` : ""}
+                            {new Date(event.changedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                            {event.changedBy ? ` by ${event.changedBy}` : ""}
+                          </p>
+                          {event.reason ? <p className="text-xs text-slate-600">{event.reason}</p> : null}
+                        </div>
+                      </div>
+                      <span className="text-xs text-slate-500 sm:text-right">{new Date(event.changedAt).toLocaleDateString()}</span>
                     </div>
-                  </div>
-                  <span className="text-xs text-slate-500">{new Date(event.changedAt).toLocaleDateString()}</span>
-                </div>
-              );
-            })}
+                  );
+                })}
+              </div>
+            ))}
           </div>
         )}
       </SectionCard>
@@ -220,7 +253,7 @@ export default function AdminMonitoringPage() {
               return (
                 <div
                   key={alert.id}
-                  className="flex items-start justify-between rounded-xl border border-slate-200 bg-white px-4 py-3 shadow-sm"
+                  className="flex flex-col gap-2 rounded-xl border border-slate-200 bg-white px-4 py-3 shadow-sm sm:flex-row sm:items-start sm:justify-between"
                 >
                   <div className="flex items-start gap-3">
                     <AlertCircle className="mt-0.5 text-amber-600" size={18} />
@@ -229,7 +262,7 @@ export default function AdminMonitoringPage() {
                       <p className="text-xs text-slate-500">{new Date(alert.createdAt).toLocaleString()}</p>
                     </div>
                   </div>
-                  <span className={`rounded-full border px-3 py-1 text-xs font-semibold ${badgeClass}`}>
+                  <span className={`self-start rounded-full border px-3 py-1 text-xs font-semibold sm:self-auto ${badgeClass}`}>
                     {alert.severity}
                   </span>
                 </div>

@@ -18,9 +18,10 @@ interface SidebarProps {
   title: string;
   items: NavItem[];
   mobile?: boolean;
+  onNavigate?: () => void;
 }
 
-export function Sidebar({ title, items, navItems, role, mobile = false }: SidebarProps) {
+export function Sidebar({ title, items, navItems, role, mobile = false, onNavigate }: SidebarProps) {
   const pathname = usePathname();
   const { email, user } = useCurrentUser();
   const activeRole = role ?? user?.role ?? title;
@@ -51,6 +52,7 @@ export function Sidebar({ title, items, navItems, role, mobile = false }: Sideba
             <Link
               key={item.href}
               href={item.href}
+              onClick={onNavigate}
               className={`flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-all ${
                 isActive
                   ? "border-l-2 border-teal-600 bg-teal-50 pl-[10px] text-teal-700"

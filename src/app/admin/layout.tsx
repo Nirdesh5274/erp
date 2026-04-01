@@ -14,6 +14,7 @@ import {
   UsersRound,
   Bell,
   BarChart3,
+  ClipboardPenLine,
 } from "lucide-react";
 import { RoleLayout } from "@/components/layout/RoleLayout";
 
@@ -26,6 +27,7 @@ const navItems = [
   { href: "/admin/users", label: "Users", icon: UsersRound },
   { href: "/admin/students", label: "Students", icon: GraduationCap },
   { href: "/admin/fees", label: "Fees", icon: ReceiptText },
+  { href: "/admin/fee-structures", label: "Fee Structures", icon: ClipboardPenLine },
   { href: "/admin/slots", label: "Slots", icon: CalendarClock },
   { href: "/admin/monitoring", label: "Monitoring", icon: MonitorPlay },
   { href: "/admin/attendance", label: "Attendance", icon: ClipboardList },

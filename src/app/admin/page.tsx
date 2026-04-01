@@ -156,6 +156,7 @@ export default function AdminDashboardPage() {
         <div className="grid gap-3 md:grid-cols-4">
           <Link href="/admin/students" className="rounded-lg border border-slate-200 px-3 py-3 text-sm font-semibold text-slate-700 hover:bg-slate-50">Students</Link>
           <Link href="/admin/fees" className="rounded-lg border border-slate-200 px-3 py-3 text-sm font-semibold text-slate-700 hover:bg-slate-50">Fees</Link>
+          <Link href="/admin/fee-structures" className="rounded-lg border border-slate-200 px-3 py-3 text-sm font-semibold text-slate-700 hover:bg-slate-50">Fee Structures</Link>
           <Link href="/admin/monitoring" className="rounded-lg border border-slate-200 px-3 py-3 text-sm font-semibold text-slate-700 hover:bg-slate-50">Monitoring</Link>
           <Link href="/admin/attendance" className="rounded-lg border border-slate-200 px-3 py-3 text-sm font-semibold text-slate-700 hover:bg-slate-50">Attendance</Link>
         </div>

@@ -41,7 +41,58 @@ export async function GET() {
     if (error) return apiError(error.message, 500);
 
     const faculties = data ?? [];
-    return apiSuccess(faculties);
+    const facultyIds = faculties.map((faculty) => faculty.id as string);
+
+    let subjectsByFaculty = new Map<string, string[]>();
+
+    if (facultyIds.length > 0) {
+      const { data: links, error: linksError } = await supabase
+        .from("faculty_subjects")
+        .select("faculty_id,subject_id")
+        .in("faculty_id", facultyIds);
+
+      if (linksError) return apiError(linksError.message, 500);
+
+      const subjectIds = Array.from(
+        new Set((links ?? []).map((link) => link.subject_id as string).filter(Boolean)),
+      );
+
+      const subjectNameById = new Map<string, string>();
+      if (subjectIds.length > 0) {
+        const { data: subjects, error: subjectsError } = await supabase
+          .from("subjects")
+          .select("id,name")
+          .in("id", subjectIds);
+
+        if (subjectsError) return apiError(subjectsError.message, 500);
+        for (const subject of subjects ?? []) {
+          subjectNameById.set(subject.id as string, subject.name as string);
+        }
+      }
+
+      const map = new Map<string, Set<string>>();
+      for (const link of links ?? []) {
+        const facultyId = link.faculty_id as string;
+        const subjectId = link.subject_id as string;
+        const subjectName = subjectNameById.get(subjectId);
+        if (!facultyId || !subjectName) continue;
+
+        const existing = map.get(facultyId) ?? new Set<string>();
+        existing.add(subjectName);
+        map.set(facultyId, existing);
+      }
+
+      subjectsByFaculty = new Map(
+        Array.from(map.entries()).map(([facultyId, names]) => [facultyId, Array.from(names)]),
+      );
+    }
+
+    return apiSuccess(
+      faculties.map((faculty) => ({
+        ...faculty,
+        subject_names: subjectsByFaculty.get(faculty.id as string) ?? [],
+      })),
+    );
   } catch (error) {
     return apiError("Unable to load faculty", 500, String(error));
   }

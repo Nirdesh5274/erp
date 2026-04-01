@@ -10,6 +10,7 @@ const postSchema = z.object({
   name: z.string().min(1),
   academicYear: z.string().min(1),
   courseId: z.string().uuid().optional(),
+  slotId: z.string().uuid().optional(),
   components: z.array(componentSchema).min(1),
   installments: z.array(installmentSchema).optional(),
 });
@@ -23,9 +24,20 @@ export async function GET() {
     const supabase = getSupabaseAdmin();
     const { data, error } = await supabase
       .from("fee_templates")
-      .select("id,academic_year,course_id,components,installments,created_at")
+      .select("id,name,academic_year,course_id,slot_id,components,installments,created_at")
       .eq("college_id", ctx.collegeId)
       .order("created_at", { ascending: false });
+
+    if (error && (error.message.toLowerCase().includes("slot_id") || error.message.toLowerCase().includes("name"))) {
+      const fallback = await supabase
+        .from("fee_templates")
+        .select("id,academic_year,course_id,components,installments,created_at")
+        .eq("college_id", ctx.collegeId)
+        .order("created_at", { ascending: false });
+
+      if (fallback.error) return apiError(fallback.error.message, 500);
+      return apiSuccess((fallback.data ?? []).map((row) => ({ ...row, name: `Structure ${row.academic_year}`, slot_id: null })));
+    }
 
     if (error) return apiError(error.message, 500);
 
@@ -46,8 +58,10 @@ export async function POST(request: Request) {
 
     const payload = {
       college_id: ctx.collegeId,
+      name: body.name,
       academic_year: body.academicYear,
       course_id: body.courseId ?? null,
+      slot_id: body.slotId ?? null,
       components: body.components,
       installments: body.installments ?? [],
     };
@@ -55,8 +69,27 @@ export async function POST(request: Request) {
     const { data, error } = await supabase
       .from("fee_templates")
       .insert(payload)
-      .select("id,academic_year,course_id,components,installments,created_at")
+      .select("id,name,academic_year,course_id,slot_id,components,installments,created_at")
       .single();
+
+    if (error && (error.message.toLowerCase().includes("slot_id") || error.message.toLowerCase().includes("name"))) {
+      const fallbackPayload = {
+        college_id: ctx.collegeId,
+        academic_year: body.academicYear,
+        course_id: body.courseId ?? null,
+        components: body.components,
+        installments: body.installments ?? [],
+      };
+
+      const fallback = await supabase
+        .from("fee_templates")
+        .insert(fallbackPayload)
+        .select("id,academic_year,course_id,components,installments,created_at")
+        .single();
+
+      if (fallback.error) return apiError(fallback.error.message, 500);
+      return apiSuccess({ ...(fallback.data ?? {}), name: body.name, slot_id: null }, 201);
+    }
 
     if (error) return apiError(error.message, 500);
 

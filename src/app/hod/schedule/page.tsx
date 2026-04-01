@@ -13,6 +13,7 @@ interface ScheduleResponse {
   rooms: Array<{ id: string; name: string; department_id?: string }>;
   faculties: Array<{ id: string; name: string; department_id: string }>;
   subjects: Array<{ id: string; name: string; department_id: string }>;
+  facultySubjectMap: Record<string, string[]>;
   lectures: Array<{
     id: string;
     departmentId: string;
@@ -44,9 +45,17 @@ interface ScheduleResponse {
 
 interface DragCard {
   facultyId: string;
+  departmentId: string;
   facultyName: string;
   subjectId: string | null;
   subjectName: string;
+}
+
+function toLocalDatePart(value: Date) {
+  const year = value.getFullYear();
+  const month = String(value.getMonth() + 1).padStart(2, "0");
+  const day = String(value.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
 }
 
 export default function HodSchedulePage() {
@@ -73,6 +82,9 @@ export default function HodSchedulePage() {
   const [conflictNote, setConflictNote] = useState<string | null>(null);
   const [suggestedRooms, setSuggestedRooms] = useState<string[]>([]);
   const [suggestedSlots, setSuggestedSlots] = useState<Array<{ label: string; startsAt: string; endsAt: string }>>([]);
+  const [showPastLectures, setShowPastLectures] = useState(false);
+  const [plannerRoomMode, setPlannerRoomMode] = useState<"auto" | "manual">("auto");
+  const [plannerSlotMinutes, setPlannerSlotMinutes] = useState(60);
 
   const { rooms: liveRooms, occupiedCount } = useRoomMonitoring();
 
@@ -92,7 +104,47 @@ export default function HodSchedulePage() {
     }));
   }, [data, liveStatusByRoom]);
 
+  const visibleLectures = useMemo(() => {
+    if (showPastLectures) return mergedLectures;
+    const now = Date.now();
+    return mergedLectures.filter((lecture) => new Date(lecture.endsAt).getTime() >= now);
+  }, [mergedLectures, showPastLectures]);
+
   const hasWindow = Boolean(startsAt && endsAt && new Date(endsAt) > new Date(startsAt));
+
+  const filteredSubjects = useMemo(() => {
+    if (!data) return [];
+    if (!facultyId) return data.subjects;
+    const mappedNames = data.facultySubjectMap?.[facultyId] ?? [];
+    if (mappedNames.length === 0) return data.subjects;
+    return data.subjects.filter((subject) => mappedNames.includes(subject.name));
+  }, [data, facultyId]);
+
+  const substituteCandidates = useMemo(() => {
+    if (!data) return [];
+    const selectedFacultyDepartmentId = data.faculties.find((faculty) => faculty.id === facultyId)?.department_id;
+    const baseList = data.faculties.filter(
+      (faculty) => faculty.id !== facultyId && (!selectedFacultyDepartmentId || faculty.department_id === selectedFacultyDepartmentId),
+    );
+    if (!hasWindow) return baseList;
+
+    const startMs = new Date(startsAt).getTime();
+    const endMs = new Date(endsAt).getTime();
+    const overlaps = (lectureStart: string, lectureEnd: string) => {
+      const lStart = new Date(lectureStart).getTime();
+      const lEnd = new Date(lectureEnd).getTime();
+      return lStart < endMs && lEnd > startMs;
+    };
+
+    return baseList.filter((faculty) =>
+      !mergedLectures.some(
+        (lecture) =>
+          overlaps(lecture.startsAt, lecture.endsAt) &&
+          (lecture.facultyId === faculty.id || lecture.substituteFacultyId === faculty.id),
+      )
+    );
+  }, [data, facultyId, hasWindow, startsAt, endsAt, mergedLectures]);
+
   const availableFaculties = useMemo(() => {
     if (!data || !hasWindow) return [];
     const startMs = new Date(startsAt).getTime();
@@ -139,12 +191,22 @@ export default function HodSchedulePage() {
     };
   }, [availableFaculties, availableRooms, smartDurationMinutes]);
 
+  useEffect(() => {
+    if (!data || !facultyId) return;
+    const mappedNames = data.facultySubjectMap?.[facultyId] ?? [];
+    if (mappedNames.length === 0) return;
+    const candidateSubjects = data.subjects.filter((subject) => mappedNames.includes(subject.name));
+    if (candidateSubjects.length === 0) return;
+    if (!candidateSubjects.some((subject) => subject.id === subjectId)) {
+      setSubjectId(candidateSubjects[0].id);
+    }
+  }, [data, facultyId, subjectId]);
+
   const weekStart = useMemo(() => {
-    const base = filterFrom ? new Date(filterFrom) : new Date();
-    const day = base.getDay();
-    const diff = (day + 6) % 7; // Monday=0
+    const now = new Date();
+    const requested = filterFrom ? new Date(filterFrom) : now;
+    const base = requested.getTime() < now.getTime() ? now : requested;
     const start = new Date(base);
-    start.setDate(base.getDate() - diff);
     start.setHours(0, 0, 0, 0);
     return start;
   }, [filterFrom]);
@@ -157,24 +219,35 @@ export default function HodSchedulePage() {
     });
   }, [weekStart]);
 
-  const slotWindows = useMemo(() => [
-    { label: "08:00-10:00", start: "08:00", end: "10:00" },
-    { label: "10:00-12:00", start: "10:00", end: "12:00" },
-    { label: "12:00-14:00", start: "12:00", end: "14:00" },
-    { label: "14:00-16:00", start: "14:00", end: "16:00" },
-    { label: "16:00-18:00", start: "16:00", end: "18:00" },
-  ], []);
+  const slotWindows = useMemo(() => {
+    const windows: Array<{ label: string; start: string; end: string }> = [];
+    const dayStartMinutes = 8 * 60;
+    const dayEndMinutes = 18 * 60;
+    const safeStep = Math.max(30, plannerSlotMinutes);
+
+    for (let cursor = dayStartMinutes; cursor < dayEndMinutes; cursor += safeStep) {
+      const endMinutes = Math.min(cursor + safeStep, dayEndMinutes);
+      const sh = String(Math.floor(cursor / 60)).padStart(2, "0");
+      const sm = String(cursor % 60).padStart(2, "0");
+      const eh = String(Math.floor(endMinutes / 60)).padStart(2, "0");
+      const em = String(endMinutes % 60).padStart(2, "0");
+      windows.push({
+        label: `${sh}:${sm}-${eh}:${em}`,
+        start: `${sh}:${sm}`,
+        end: `${eh}:${em}`,
+      });
+    }
+
+    return windows;
+  }, [plannerSlotMinutes]);
 
   const dragCards = useMemo<DragCard[]>(() => {
     if (!data) return [];
-    const subsByDept = new Map<string, string>();
-    for (const subj of data.subjects) {
-      subsByDept.set(subj.id, subj.name);
-    }
     return data.faculties.slice(0, 12).map((fac) => {
       const subj = data.subjects.find((s) => s.department_id === fac.department_id) ?? data.subjects[0];
       return {
         facultyId: fac.id,
+        departmentId: fac.department_id,
         facultyName: fac.name,
         subjectId: subj?.id ?? null,
         subjectName: subj?.name ?? "General",
@@ -182,23 +255,32 @@ export default function HodSchedulePage() {
     });
   }, [data]);
 
+  const plannerRoomChoices = useMemo(() => {
+    if (!data) return [];
+    if (!departmentId) return data.rooms;
+    const filtered = data.rooms.filter((room) => !room.department_id || room.department_id === departmentId);
+    return filtered.length > 0 ? filtered : data.rooms;
+  }, [data, departmentId]);
+
   const lecturesByCell = useMemo(() => {
     const map = new Map<string, ScheduleResponse["lectures"]>();
-    for (const lec of mergedLectures) {
+    for (const lec of visibleLectures) {
       const dt = new Date(lec.startsAt);
       const dayKey = dt.toDateString();
-      const hour = dt.getHours();
+      const lectureMinutes = dt.getHours() * 60 + dt.getMinutes();
       const slot = slotWindows.find((s) => {
-        const [h] = s.start.split(":");
-        const [eh] = s.end.split(":");
-        return hour >= Number(h) && hour < Number(eh);
+        const [h, m] = s.start.split(":");
+        const [eh, em] = s.end.split(":");
+        const startMinutes = Number(h) * 60 + Number(m);
+        const endMinutes = Number(eh) * 60 + Number(em);
+        return lectureMinutes >= startMinutes && lectureMinutes < endMinutes;
       });
       if (!slot) continue;
       const key = `${dayKey}-${slot.label}`;
       map.set(key, [...(map.get(key) ?? []), lec]);
     }
     return map;
-  }, [mergedLectures, slotWindows]);
+  }, [visibleLectures, slotWindows]);
 
   const facultyWorkload = useMemo(() => {
     const map = new Map<string, number>();
@@ -240,32 +322,34 @@ export default function HodSchedulePage() {
     void load();
   }, [load]);
 
-  const handleAddSchedule = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    if (!departmentId || !facultyId || !roomId || !startsAt || !endsAt) return;
-
+  const createLecture = useCallback(async (payload: {
+    departmentId: string;
+    facultyId: string;
+    roomId: string;
+    subjectId?: string;
+    substituteFacultyId?: string;
+    startsAt: string;
+    endsAt: string;
+  }) => {
     setError(null);
     try {
       await apiFetch<{ lectureId: string }>("/api/hod/schedule", {
         method: "POST",
         body: JSON.stringify({
-          departmentId,
-          facultyId,
-          roomId,
-          subjectId: subjectId || null,
-          substituteFacultyId: substituteFacultyId || undefined,
-          startsAt: new Date(startsAt).toISOString(),
-          endsAt: new Date(endsAt).toISOString(),
-          isSubstitute: Boolean(substituteFacultyId),
+          departmentId: payload.departmentId,
+          facultyId: payload.facultyId,
+          roomId: payload.roomId,
+          subjectId: payload.subjectId || null,
+          substituteFacultyId: payload.substituteFacultyId || undefined,
+          startsAt: new Date(payload.startsAt).toISOString(),
+          endsAt: new Date(payload.endsAt).toISOString(),
         }),
       });
       setConflictNote(null);
       setSuggestedRooms([]);
       setSuggestedSlots([]);
-      setStartsAt("");
-      setEndsAt("");
-      setSubstituteFacultyId("");
       await load();
+      return true;
     } catch (submitError) {
       const message = submitError instanceof Error ? submitError.message : "Unable to create lecture";
       setError(message);
@@ -274,12 +358,35 @@ export default function HodSchedulePage() {
         const altRooms = availableRooms.map((r) => r.name).slice(0, 5);
         setSuggestedRooms(altRooms);
         const nextSlots = slotWindows.slice(1, 4).map((slot) => {
-          const start = `${weekStart.toISOString().slice(0, 10)}T${slot.start}`;
-          const end = `${weekStart.toISOString().slice(0, 10)}T${slot.end}`;
+          const datePart = toLocalDatePart(weekStart);
+          const start = `${datePart}T${slot.start}`;
+          const end = `${datePart}T${slot.end}`;
           return { label: slot.label, startsAt: start, endsAt: end };
         });
         setSuggestedSlots(nextSlots);
       }
+      return false;
+    }
+  }, [availableRooms, hasWindow, load, slotWindows, weekStart]);
+
+  const handleAddSchedule = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!departmentId || !facultyId || !roomId || !startsAt || !endsAt) return;
+
+    const created = await createLecture({
+      departmentId,
+      facultyId,
+      roomId,
+      subjectId,
+      substituteFacultyId,
+      startsAt,
+      endsAt,
+    });
+
+    if (created) {
+      setStartsAt("");
+      setEndsAt("");
+      setSubstituteFacultyId("");
     }
   };
 
@@ -322,20 +429,97 @@ export default function HodSchedulePage() {
     event.dataTransfer.setData("application/json", JSON.stringify(card));
   };
 
+  const getAvailableRoomsForWindow = useCallback((slotStart: string, slotEnd: string, slotDepartmentId?: string) => {
+    if (!data) return [] as Array<{ id: string; name: string }>;
+    const startMs = new Date(slotStart).getTime();
+    const endMs = new Date(slotEnd).getTime();
+    const scopedRooms = data.rooms.filter((room) => !slotDepartmentId || !room.department_id || room.department_id === slotDepartmentId);
+    const freeRooms = scopedRooms.filter((room) => {
+      return !mergedLectures.some((lecture) => {
+        if (lecture.roomId !== room.id) return false;
+        const lectureStart = new Date(lecture.startsAt).getTime();
+        const lectureEnd = new Date(lecture.endsAt).getTime();
+        return lectureStart < endMs && lectureEnd > startMs;
+      });
+    });
+
+    return freeRooms.map((room) => ({ id: room.id, name: room.name }));
+  }, [data, mergedLectures]);
+
+  const getRoomNameById = useCallback((candidateRoomId: string) => {
+    if (!data) return candidateRoomId;
+    return data.rooms.find((room) => room.id === candidateRoomId)?.name ?? candidateRoomId;
+  }, [data]);
+
+  const isRoomFreeInWindow = useCallback((candidateRoomId: string, slotStart: string, slotEnd: string) => {
+    const startMs = new Date(slotStart).getTime();
+    const endMs = new Date(slotEnd).getTime();
+    return !mergedLectures.some((lecture) => {
+      if (lecture.roomId !== candidateRoomId) return false;
+      const lectureStart = new Date(lecture.startsAt).getTime();
+      const lectureEnd = new Date(lecture.endsAt).getTime();
+      return lectureStart < endMs && lectureEnd > startMs;
+    });
+  }, [mergedLectures]);
+
+  const getAvailableRoomIdForWindow = useCallback((slotStart: string, slotEnd: string, slotDepartmentId?: string) => {
+    return getAvailableRoomsForWindow(slotStart, slotEnd, slotDepartmentId)[0]?.id ?? "";
+  }, [getAvailableRoomsForWindow]);
+
   const handleDropOnSlot = async (event: DragEvent<HTMLDivElement>, day: Date, slot: { start: string; end: string }) => {
     event.preventDefault();
     const text = event.dataTransfer.getData("application/json");
     if (!text) return;
+
     const card = JSON.parse(text) as DragCard;
-    const startIso = `${day.toISOString().slice(0, 10)}T${slot.start}`;
-    const endIso = `${day.toISOString().slice(0, 10)}T${slot.end}`;
-    setDepartmentId((prev) => prev || data?.departments[0]?.id || "");
-    setFacultyId(card.facultyId);
-    setSubjectId(card.subjectId ?? "");
-    setRoomId(data?.rooms[0]?.id ?? "");
-    setStartsAt(startIso);
-    setEndsAt(endIso);
-    await handleAddSchedule(new Event("submit") as unknown as FormEvent<HTMLFormElement>);
+    const datePart = toLocalDatePart(day);
+    const startIso = `${datePart}T${slot.start}`;
+    const endIso = `${datePart}T${slot.end}`;
+
+    if (new Date(endIso).getTime() <= Date.now()) {
+      toast.error("Past slot cannot be scheduled");
+      return;
+    }
+
+    const availableRoomsForSlot = getAvailableRoomsForWindow(startIso, endIso, card.departmentId);
+    if (availableRoomsForSlot.length === 0) {
+      toast.error("No free room available for this slot");
+      return;
+    }
+
+    let targetRoomId = "";
+    if (plannerRoomMode === "manual") {
+      if (!roomId) {
+        toast.error("Select a room in planner settings first");
+        return;
+      }
+      if (!isRoomFreeInWindow(roomId, startIso, endIso)) {
+        const options = availableRoomsForSlot.map((room) => room.name).join(", ");
+        toast.error(`Selected room is busy. Free rooms: ${options}`);
+        return;
+      }
+      targetRoomId = roomId;
+    } else {
+      targetRoomId = getAvailableRoomIdForWindow(startIso, endIso, card.departmentId);
+    }
+
+    if (!targetRoomId) {
+      toast.error("Unable to resolve room for selected slot");
+      return;
+    }
+
+    const created = await createLecture({
+      departmentId: card.departmentId || departmentId || data?.departments[0]?.id || "",
+      facultyId: card.facultyId,
+      roomId: targetRoomId,
+      subjectId: card.subjectId ?? undefined,
+      startsAt: startIso,
+      endsAt: endIso,
+    });
+
+    if (created) {
+      toast.success(`Lecture created in room ${getRoomNameById(targetRoomId)}`);
+    }
   };
 
   const allowDrop = (event: DragEvent<HTMLDivElement>) => {
@@ -363,7 +547,7 @@ export default function HodSchedulePage() {
         title="Schedule Lectures"
         description="Assign faculty, room, time, subject, and substitutes with conflict checks"
         actionSlot={
-          <div className="flex items-center gap-2 text-xs text-slate-600">
+          <div className="flex flex-wrap items-center gap-2 text-xs text-slate-600">
             <span className="rounded-full bg-slate-100 px-2 py-1">Live occupied: {occupiedCount}</span>
             <button onClick={handleExport} className="rounded-lg border border-slate-300 px-3 py-1 font-semibold text-slate-700">
               Export CSV
@@ -386,7 +570,7 @@ export default function HodSchedulePage() {
             <input type="datetime-local" value={filterTo} onChange={(e) => setFilterTo(e.target.value)} className="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm" />
           </label>
           <div className="flex items-end justify-end gap-2">
-            <button onClick={load} className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white" disabled={loading}>
+            <button onClick={load} className="w-full rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white sm:w-auto" disabled={loading}>
               Refresh
             </button>
           </div>
@@ -439,7 +623,7 @@ export default function HodSchedulePage() {
         </div>
 
         <form onSubmit={handleAddSchedule} className="mt-4 grid gap-3 text-sm md:grid-cols-2">
-          <select value={facultyId} onChange={(e) => setFacultyId(e.target.value)} className="rounded-xl border border-slate-300 px-3 py-2" required>
+          <select value={facultyId} onChange={(e) => { setFacultyId(e.target.value); setSubstituteFacultyId(""); }} className="rounded-xl border border-slate-300 px-3 py-2" required>
             <option value="">Select faculty</option>
             {(hasWindow ? availableFaculties : data?.faculties ?? []).map((faculty) => (
               <option key={faculty.id} value={faculty.id}>{faculty.name}</option>
@@ -447,7 +631,7 @@ export default function HodSchedulePage() {
           </select>
           <select value={subjectId} onChange={(e) => setSubjectId(e.target.value)} className="rounded-xl border border-slate-300 px-3 py-2">
             <option value="">Subject (optional)</option>
-            {data?.subjects.map((subject) => (
+            {filteredSubjects.map((subject) => (
               <option key={subject.id} value={subject.id}>{subject.name}</option>
             ))}
           </select>
@@ -459,20 +643,23 @@ export default function HodSchedulePage() {
           </select>
           <select value={substituteFacultyId} onChange={(e) => setSubstituteFacultyId(e.target.value)} className="rounded-xl border border-slate-300 px-3 py-2">
             <option value="">Substitute (optional)</option>
-            {data?.faculties.map((faculty) => (
+            {substituteCandidates.map((faculty) => (
               <option key={faculty.id} value={faculty.id}>{faculty.name}</option>
             ))}
           </select>
           <input type="datetime-local" value={startsAt} onChange={(e) => setStartsAt(e.target.value)} className="rounded-xl border border-slate-300 px-3 py-2" required />
           <input type="datetime-local" value={endsAt} onChange={(e) => setEndsAt(e.target.value)} className="rounded-xl border border-slate-300 px-3 py-2" required />
-          <div className="md:col-span-2 flex flex-wrap gap-2">
-            <button type="submit" className="rounded-xl bg-teal-700 px-4 py-2 font-semibold text-white" disabled={loading}>
+          <div className="flex flex-wrap gap-2 md:col-span-2">
+            <button type="submit" className="w-full rounded-xl bg-teal-700 px-4 py-2 font-semibold text-white sm:w-auto" disabled={loading}>
               Add Lecture
             </button>
-            <button type="button" onClick={() => { setStartsAt(""); setEndsAt(""); setSubstituteFacultyId(""); }} className="rounded-xl border border-slate-300 px-4 py-2 font-semibold text-slate-700">
+            <button type="button" onClick={() => { setStartsAt(""); setEndsAt(""); setSubstituteFacultyId(""); }} className="w-full rounded-xl border border-slate-300 px-4 py-2 font-semibold text-slate-700 sm:w-auto">
               Clear
             </button>
           </div>
+          <p className="text-xs text-slate-500 md:col-span-2">
+            Subject auto-fills from faculty mapping. Substitute can be selected only from currently available faculty.
+          </p>
         </form>
 
         {hasWindow ? (
@@ -508,7 +695,7 @@ export default function HodSchedulePage() {
           <p className="font-semibold text-slate-700">Quick Move / Swap</p>
           <select value={selectedLectureId} onChange={(e) => setSelectedLectureId(e.target.value)} className="w-full rounded-xl border border-slate-300 px-3 py-2">
             <option value="">Select lecture</option>
-            {mergedLectures.map((item) => (
+            {visibleLectures.map((item) => (
               <option key={item.id} value={item.id}>
                 {new Date(item.startsAt).toLocaleString()} · {item.subjectName || "Lecture"} · {item.facultyName}
               </option>
@@ -519,24 +706,37 @@ export default function HodSchedulePage() {
               <option key={room.id} value={room.id}>{room.name}</option>
             ))}
           </select>
-          <button type="submit" className="rounded-xl bg-amber-600 px-4 py-2 font-semibold text-white" disabled={loading}>
+          <button type="submit" className="w-full rounded-xl bg-amber-600 px-4 py-2 font-semibold text-white sm:w-auto" disabled={loading}>
             Move Room
           </button>
         </form>
       </SectionCard>
 
-      <SectionCard title="Lecture Planner" description="Filtered by department and date window">
+      <SectionCard
+        title="Lecture Planner"
+        description="Filtered by department and date window"
+        actionSlot={
+          <label className="inline-flex items-center gap-2 text-xs text-slate-600">
+            <input
+              type="checkbox"
+              checked={showPastLectures}
+              onChange={(e) => setShowPastLectures(e.target.checked)}
+            />
+            Show past lectures
+          </label>
+        }
+      >
         <div className="space-y-3 text-sm">
-          {mergedLectures.map((item) => (
+          {visibleLectures.map((item) => (
             <div key={item.id} className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 shadow-sm">
-              <div className="flex flex-wrap items-start justify-between gap-2">
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
                 <div>
                   <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">{item.departmentName}</p>
                   <p className="text-base font-semibold text-slate-900">{item.subjectName || "Lecture"}</p>
                   <p className="text-slate-700">{item.facultyName}{item.substituteFacultyName ? ` (sub: ${item.substituteFacultyName})` : ""}</p>
                   <p className="text-slate-600">Room {item.roomName || "TBD"}</p>
                 </div>
-                <div className="flex flex-col items-end gap-1 text-xs font-semibold">
+                <div className="flex flex-row flex-wrap items-center gap-1 text-xs font-semibold sm:flex-col sm:items-end">
                   <span className={`rounded-full px-3 py-1 ${item.liveStatus === "occupied" ? "bg-teal-100 text-teal-800" : "bg-slate-200 text-slate-700"}`}>
                     {item.liveStatus}
                   </span>
@@ -568,7 +768,7 @@ export default function HodSchedulePage() {
                 >
                   <option value="">Assign substitute</option>
                   {data?.faculties
-                    .filter((f) => f.department_id === item.departmentId)
+                    .filter((f) => f.department_id === item.departmentId && f.id !== item.facultyId)
                     .map((f) => (
                       <option key={f.id} value={f.id}>
                         {f.name}
@@ -586,7 +786,7 @@ export default function HodSchedulePage() {
               </div>
             </div>
           ))}
-          {mergedLectures.length === 0 && !loading ? (
+          {visibleLectures.length === 0 && !loading ? (
             <p className="rounded-xl border border-dashed border-slate-200 px-4 py-3 text-slate-600">No lectures in this window.</p>
           ) : null}
         </div>
@@ -596,6 +796,54 @@ export default function HodSchedulePage() {
         <div className="grid gap-4 lg:grid-cols-4">
           <div className="space-y-2 rounded-xl border border-slate-200 bg-white p-3 text-sm">
             <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Faculty + subject cards</p>
+            <div className="rounded-lg border border-slate-200 bg-slate-50 p-2">
+              <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Room strategy</p>
+              <div className="mt-2 flex flex-wrap gap-3 text-xs text-slate-700">
+                <label className="inline-flex items-center gap-1">
+                  <input
+                    type="radio"
+                    name="planner-room-mode"
+                    checked={plannerRoomMode === "auto"}
+                    onChange={() => setPlannerRoomMode("auto")}
+                  />
+                  Auto (first free room)
+                </label>
+                <label className="inline-flex items-center gap-1">
+                  <input
+                    type="radio"
+                    name="planner-room-mode"
+                    checked={plannerRoomMode === "manual"}
+                    onChange={() => setPlannerRoomMode("manual")}
+                  />
+                  Manual room
+                </label>
+              </div>
+              {plannerRoomMode === "manual" ? (
+                <select
+                  value={roomId}
+                  onChange={(e) => setRoomId(e.target.value)}
+                  className="mt-2 w-full rounded-lg border border-slate-300 px-2 py-1.5 text-xs"
+                >
+                  <option value="">Select room for timetable drops</option>
+                  {plannerRoomChoices.map((room) => (
+                    <option key={room.id} value={room.id}>{room.name}</option>
+                  ))}
+                </select>
+              ) : null}
+              <label className="mt-2 block text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                Slot duration
+                <select
+                  value={plannerSlotMinutes}
+                  onChange={(e) => setPlannerSlotMinutes(Number(e.target.value))}
+                  className="mt-1 w-full rounded-lg border border-slate-300 px-2 py-1.5 text-xs font-medium text-slate-700"
+                >
+                  <option value={30}>30 minutes</option>
+                  <option value={60}>60 minutes (default)</option>
+                  <option value={90}>90 minutes</option>
+                  <option value={120}>120 minutes</option>
+                </select>
+              </label>
+            </div>
             <div className="grid gap-2 md:grid-cols-2 lg:grid-cols-1">
               {dragCards.map((card) => (
                 <div
@@ -609,10 +857,12 @@ export default function HodSchedulePage() {
                 </div>
               ))}
             </div>
-            <p className="text-[11px] text-slate-500">Drop on a slot to create. Picks first available room by default.</p>
+            <p className="text-[11px] text-slate-500">
+              Drop on a slot to create. In manual mode, selected room must be free in that slot.
+            </p>
           </div>
 
-          <div className="lg:col-span-3 overflow-auto">
+          <div className="overflow-auto lg:col-span-3">
             <table className="min-w-full text-xs text-slate-800">
               <thead>
                 <tr>
@@ -629,15 +879,20 @@ export default function HodSchedulePage() {
                     {weekDays.map((day) => {
                       const key = `${day.toDateString()}-${slot.label}`;
                       const list = lecturesByCell.get(key) ?? [];
+                      const datePart = toLocalDatePart(day);
+                      const slotEnd = new Date(`${datePart}T${slot.end}`);
+                      const isPastSlot = slotEnd.getTime() <= Date.now();
                       return (
                         <td
                           key={key}
                           className="min-w-[180px] p-2"
-                          onDragOver={allowDrop}
-                          onDrop={(e) => void handleDropOnSlot(e, day, slot)}
+                          onDragOver={isPastSlot ? undefined : allowDrop}
+                          onDrop={isPastSlot ? undefined : (e) => void handleDropOnSlot(e, day, slot)}
                         >
-                          <div className="min-h-[90px] rounded-xl border border-dashed border-slate-200 bg-slate-50 p-2">
-                            {list.length === 0 ? <p className="text-[11px] text-slate-500">Drop to schedule</p> : null}
+                          <div className={`min-h-[90px] rounded-xl border border-dashed p-2 ${isPastSlot ? "border-slate-200 bg-slate-100" : "border-slate-200 bg-slate-50"}`}>
+                            {list.length === 0 ? (
+                              <p className="text-[11px] text-slate-500">{isPastSlot ? "Past slot" : "Drop to schedule"}</p>
+                            ) : null}
                             {list.map((lec) => (
                               <div key={lec.id} className="mb-2 rounded-lg border border-slate-200 bg-white px-2 py-1 shadow-sm">
                                 <p className="text-xs font-semibold text-slate-900">{lec.subjectName || "Lecture"}</p>

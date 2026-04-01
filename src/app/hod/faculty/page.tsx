@@ -11,6 +11,7 @@ interface FacultyRow {
   name: string;
   email: string;
   department_id: string;
+  subject_names?: string[];
 }
 
 interface DepartmentRow {
@@ -93,7 +94,7 @@ export default function HodFacultyPage() {
   }
 
   return (
-    <div className="grid gap-6 lg:grid-cols-2">
+    <div className="grid grid-cols-1 gap-4 sm:gap-6 lg:grid-cols-2">
       <SectionCard title="Add Faculty" description="Create faculty and assign initial subject">
         <form onSubmit={handleAdd} className="space-y-3 text-sm">
           <input
@@ -132,7 +133,10 @@ export default function HodFacultyPage() {
             placeholder="Assign subject"
             className="w-full rounded-xl border border-slate-300 px-3 py-2"
           />
-          <button type="submit" className="rounded-xl bg-teal-700 px-4 py-2 font-semibold text-white">
+          <button
+            type="submit"
+            className="w-full rounded-xl bg-teal-700 px-4 py-2 font-semibold text-white sm:w-auto"
+          >
             Add Faculty
           </button>
         </form>
@@ -143,11 +147,15 @@ export default function HodFacultyPage() {
         <div className="space-y-2 text-sm">
           {items.map((item) => (
             <div key={item.id} className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
-              <p className="font-semibold text-slate-800">{item.name}</p>
-              <p className="text-slate-600">{item.email}</p>
+              <p className="break-words font-semibold text-slate-800">{item.name}</p>
+              <p className="break-all text-slate-600">{item.email}</p>
               <p className="text-teal-700">Department: {deptById.get(item.department_id) ?? "Unknown"}</p>
+              <p className="break-words text-slate-700">
+                Subject: {item.subject_names && item.subject_names.length > 0 ? item.subject_names.join(", ") : "Not assigned"}
+              </p>
             </div>
           ))}
+          {items.length === 0 ? <p className="text-slate-500">No faculty found.</p> : null}
         </div>
       </SectionCard>
     </div>

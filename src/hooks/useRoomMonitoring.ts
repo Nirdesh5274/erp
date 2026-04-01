@@ -193,20 +193,9 @@ export function useRoomMonitoring() {
           table: "monitoring_alerts",
           filter: `college_id=eq.${collegeId}`,
         },
-        (payload: RealtimePostgresChangesPayload<MonitoringAlertRow>) => {
-          const newRow = (payload.new ?? {}) as MonitoringAlertRow;
-          setAlerts((prev) => [
-            {
-              id: String(newRow.id ?? crypto.randomUUID()),
-              roomId: newRow.room_id ?? null,
-              lectureId: newRow.lecture_id ?? null,
-              message: String(newRow.message ?? ""),
-              severity: String(newRow.severity ?? "warning"),
-              resolved: Boolean(newRow.resolved ?? false),
-              createdAt: String(newRow.created_at ?? new Date().toISOString()),
-            },
-            ...prev,
-          ]);
+        () => {
+          // Reload through API so alert filtering rules stay consistent with server logic.
+          void load();
         },
       )
       .subscribe((status) => {
