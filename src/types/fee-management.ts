@@ -4,6 +4,7 @@ export interface FeeStructureRow {
   id: string;
   college_id: string;
   slot_id: string;
+  semester: number;
   name: string;
   academic_year: string;
   is_active: boolean;

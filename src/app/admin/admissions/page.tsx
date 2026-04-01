@@ -9,6 +9,7 @@ interface AdmissionRow {
   studentName: string;
   email: string;
   phone: string | null;
+  currentSemester?: number | null;
   status: string;
   createdAt: string;
   departmentId: string;
@@ -40,6 +41,7 @@ export default function AdminAdmissionsPage() {
   const [studentName, setStudentName] = useState("");
   const [email, setEmail] = useState("");
   const [phone, setPhone] = useState("");
+  const [currentSemester, setCurrentSemester] = useState(1);
   const [feeAmount, setFeeAmount] = useState(20000);
 
   const deptById = useMemo(() => new Map(departments.map((item) => [item.id, item.name])), [departments]);
@@ -86,6 +88,12 @@ export default function AdminAdmissionsPage() {
   const handleCreate = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setError("");
+
+    if (phone && phone.length !== 10) {
+      setError("Phone number must be exactly 10 digits");
+      return;
+    }
+
     try {
       await apiFetch<{ admission_id: string }>("/api/admin/admissions", {
         method: "POST",
@@ -95,6 +103,7 @@ export default function AdminAdmissionsPage() {
           studentName,
           email,
           phone: phone || null,
+          currentSemester,
           feeAmount,
         }),
       });
@@ -156,7 +165,6 @@ export default function AdminAdmissionsPage() {
             <input
               type="tel"
               inputMode="numeric"
-              pattern="\\d{10}"
               value={phone}
               onChange={(e) => handlePhoneChange(e.target.value)}
               placeholder="10-digit mobile number"
@@ -166,6 +174,24 @@ export default function AdminAdmissionsPage() {
           <label className="space-y-1">
             <span className="text-xs font-semibold text-slate-600">Admission Fee</span>
             <input type="number" min={0} value={feeAmount} onChange={(e) => setFeeAmount(Number(e.target.value))} placeholder="Admission fee amount" className="w-full rounded-xl border border-slate-300 px-3 py-2" required />
+          </label>
+          <label className="space-y-1">
+            <span className="text-xs font-semibold text-slate-600">Current Semester</span>
+            <select
+              value={currentSemester}
+              onChange={(e) => setCurrentSemester(Number(e.target.value))}
+              className="w-full rounded-xl border border-slate-300 px-3 py-2"
+              required
+            >
+              {Array.from({ length: 12 }, (_, index) => {
+                const semester = index + 1;
+                return (
+                  <option key={semester} value={semester}>
+                    Semester {semester}
+                  </option>
+                );
+              })}
+            </select>
           </label>
           <button className="rounded-xl bg-teal-700 px-4 py-2 font-semibold text-white hover:bg-teal-800 md:col-span-3">Submit Admission</button>
         </form>
@@ -179,6 +205,7 @@ export default function AdminAdmissionsPage() {
               <p className="font-semibold text-slate-800">{item.studentName}</p>
               <p className="text-slate-600">{item.email}</p>
               <p className="text-slate-600">Department: {deptById.get(item.departmentId) ?? "Unknown"}</p>
+              <p className="text-slate-600">Current Semester: {item.currentSemester ?? "N/A"}</p>
               <p className="text-teal-700">{item.status} • {new Date(item.createdAt).toLocaleString()}</p>
             </div>
           ))}

@@ -15,6 +15,7 @@ interface ProfileResponse {
     departmentName: string | null;
     slotId: string | null;
     course: string | null;
+    currentSemester: number | null;
     admissionId: string | null;
   };
   subjects: Array<{ id: string; name: string; facultyName: string | null }>;
@@ -175,6 +176,7 @@ export default function StudentProfilePage() {
           <p className="rounded-xl border border-slate-200 bg-white px-4 py-3 shadow-sm">Email: {profile?.student.email ?? "—"}</p>
           <p className="rounded-xl border border-slate-200 bg-white px-4 py-3 shadow-sm">Department: {profile?.student.departmentName ?? "—"}</p>
           <p className="rounded-xl border border-slate-200 bg-white px-4 py-3 shadow-sm">Course: {profile?.student.course ?? "—"}</p>
+          <p className="rounded-xl border border-slate-200 bg-white px-4 py-3 shadow-sm">Semester: {profile?.student.currentSemester ?? "N/A"}</p>
         </div>
         <p className="mt-3 text-xs text-slate-500">Student ID: {profile?.student.id ?? "Pending mapping"} · Admission: {profile?.student.admissionId ?? "—"}</p>
       </SectionCard>

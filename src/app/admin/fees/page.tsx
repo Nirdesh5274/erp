@@ -25,6 +25,7 @@ interface SlotStudentSummary {
   name: string;
   email: string;
   admissionId: string | null;
+  currentSemester: number | null;
   totalDue: number;
   totalPaid: number;
   feesCount: number;
@@ -85,8 +86,17 @@ interface StudentFeesResponse extends SlotFeesResponse {
     name: string;
     email: string;
     admissionId: string | null;
+    currentSemester: number | null;
   };
   fees: StudentFeeRow[];
+  legacyFees?: Array<{
+    id: string;
+    amount: number;
+    paidAmount: number;
+    dueAmount: number;
+    status: string;
+    generatedAt: string;
+  }>;
   feeItems: StudentFeeItem[];
   payments: PaymentRow[];
   receipts: ReceiptRow[];
@@ -140,6 +150,7 @@ function StudentListPanel({
                 <div className="min-w-0">
                   <p className="truncate text-sm font-semibold text-slate-900">{student.name}</p>
                   <p className="truncate text-xs text-slate-600">{student.admissionId ?? "No admission"}</p>
+                  <p className="text-xs font-semibold text-slate-700">Current Sem: {student.currentSemester ?? "N/A"}</p>
                 </div>
                 <span
                   className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${
@@ -326,6 +337,7 @@ export default function AdminFeesPage() {
   }, [studentDetails?.receipts]);
 
   const feesForUI = studentDetails?.fees ?? [];
+  const legacyFeesForUI = studentDetails?.legacyFees ?? [];
   const itemsForUI = feeItemsByFeeId;
   const paymentsForUI = paymentsByFeeId;
   const receiptMapForUI = receiptByPaymentId;
@@ -345,10 +357,58 @@ export default function AdminFeesPage() {
     });
   }, [studentsForUI, searchTerm]);
 
-  const targetFee = useMemo(() => feesForUI.find((fee) => fee.dueTotal > 0) ?? feesForUI[0] ?? null, [feesForUI]);
+  const targetV3Fee = useMemo(() => feesForUI.find((fee) => fee.dueTotal > 0) ?? feesForUI[0] ?? null, [feesForUI]);
+
+  const targetPayment = useMemo(() => {
+    const dueV3 = feesForUI.find((fee) => fee.dueTotal > 0);
+    if (dueV3) {
+      return {
+        kind: "v3" as const,
+        key: `v3:${dueV3.id}`,
+        feeId: dueV3.id,
+        label: dueV3.structureName,
+        due: Number(dueV3.dueTotal ?? 0),
+      };
+    }
+
+    const dueLegacy = legacyFeesForUI.find((fee) => Number(fee.dueAmount ?? 0) > 0);
+    if (dueLegacy) {
+      return {
+        kind: "legacy" as const,
+        key: `legacy:${dueLegacy.id}`,
+        feeId: dueLegacy.id,
+        label: "Admission Fee",
+        due: Number(dueLegacy.dueAmount ?? 0),
+      };
+    }
+
+    const fallbackV3 = feesForUI[0];
+    if (fallbackV3) {
+      return {
+        kind: "v3" as const,
+        key: `v3:${fallbackV3.id}`,
+        feeId: fallbackV3.id,
+        label: fallbackV3.structureName,
+        due: Number(fallbackV3.dueTotal ?? 0),
+      };
+    }
+
+    const fallbackLegacy = legacyFeesForUI[0];
+    if (fallbackLegacy) {
+      return {
+        kind: "legacy" as const,
+        key: `legacy:${fallbackLegacy.id}`,
+        feeId: fallbackLegacy.id,
+        label: "Admission Fee",
+        due: Number(fallbackLegacy.dueAmount ?? 0),
+      };
+    }
+
+    return null;
+  }, [feesForUI, legacyFeesForUI]);
 
   const summary = useMemo(() => {
-    return feesForUI.reduce(
+    const initial = feesForUI.reduce(
       (acc, fee) => {
         acc.total += fee.grandTotal;
         acc.paid += fee.paidTotal;
@@ -358,7 +418,15 @@ export default function AdminFeesPage() {
       },
       { total: 0, paid: 0, due: 0, fine: 0 },
     );
-  }, [feesForUI]);
+
+    for (const legacy of studentDetails?.legacyFees ?? []) {
+      initial.total += Number(legacy.amount ?? 0);
+      initial.paid += Number(legacy.paidAmount ?? 0);
+      initial.due += Number(legacy.dueAmount ?? 0);
+    }
+
+    return initial;
+  }, [feesForUI, studentDetails?.legacyFees]);
 
   const breakdownRows = useMemo(() => {
     const map = new Map<string, number>();
@@ -368,8 +436,18 @@ export default function AdminFeesPage() {
         map.set(item.label, (map.get(item.label) ?? 0) + Number(item.amount ?? 0));
       }
     }
+
+    const legacyAdmissionTotal = (studentDetails?.legacyFees ?? []).reduce(
+      (sum, legacy) => sum + Number(legacy.amount ?? 0),
+      0,
+    );
+
+    if (legacyAdmissionTotal > 0) {
+      map.set("Admission Fee", (map.get("Admission Fee") ?? 0) + legacyAdmissionTotal);
+    }
+
     return Array.from(map.entries()).map(([label, amount]) => ({ label, amount }));
-  }, [feesForUI, itemsForUI]);
+  }, [feesForUI, itemsForUI, studentDetails?.legacyFees]);
 
   const transactionRows = useMemo(() => {
     const list = feesForUI.flatMap((fee) => {
@@ -404,29 +482,45 @@ export default function AdminFeesPage() {
   };
 
   const recordPayment = async () => {
-    if (!targetFee) return;
+    if (!targetPayment) return;
 
-    const feeId = targetFee.id;
-    const amount = Number(paymentAmountByFee[feeId] ?? 0);
+    const targetKey = targetPayment.key;
+    const amount = Number(paymentAmountByFee[targetKey] ?? 0);
     if (amount <= 0) return toast.error("Enter a valid payment amount");
+    if (targetPayment.due <= 0) return toast.error("No due amount remaining");
+    if (amount > targetPayment.due) return toast.error(`Amount cannot exceed due ${money(targetPayment.due)}`);
 
-    setPayingFeeId(feeId);
+    setPayingFeeId(targetKey);
     setError("");
     try {
-      await apiFetch("/api/admin/payments", {
-        method: "POST",
-        body: JSON.stringify({
-          studentFeeId: feeId,
-          amount,
-          paymentMode: paymentModeByFee[feeId] || "Cash",
-          transactionId: transactionIdByFee[feeId] || undefined,
-          receiptNumber: receiptNoByFee[feeId] || undefined,
-        }),
-      });
+      if (targetPayment.kind === "v3") {
+        await apiFetch("/api/admin/payments", {
+          method: "POST",
+          body: JSON.stringify({
+            studentFeeId: targetPayment.feeId,
+            amount,
+            paymentMode: paymentModeByFee[targetKey] || "Cash",
+            transactionId: transactionIdByFee[targetKey] || undefined,
+            receiptNumber: receiptNoByFee[targetKey] || undefined,
+          }),
+        });
+      } else {
+        await apiFetch("/api/admin/fees/receipts", {
+          method: "POST",
+          body: JSON.stringify({
+            feeId: targetPayment.feeId,
+            amount,
+            paymentMode: paymentModeByFee[targetKey] || "Cash",
+            referenceNumber: transactionIdByFee[targetKey] || undefined,
+            receiptNumber: receiptNoByFee[targetKey] || undefined,
+          }),
+        });
+      }
+
       await refreshActiveViews();
-      setPaymentAmountByFee((prev) => ({ ...prev, [feeId]: 0 }));
-      setTransactionIdByFee((prev) => ({ ...prev, [feeId]: "" }));
-      setReceiptNoByFee((prev) => ({ ...prev, [feeId]: "" }));
+      setPaymentAmountByFee((prev) => ({ ...prev, [targetKey]: 0 }));
+      setTransactionIdByFee((prev) => ({ ...prev, [targetKey]: "" }));
+      setReceiptNoByFee((prev) => ({ ...prev, [targetKey]: "" }));
       toast.success("Payment recorded successfully");
     } catch (e) {
       const message = e instanceof Error ? e.message : "Unable to record payment";
@@ -438,9 +532,9 @@ export default function AdminFeesPage() {
   };
 
   const applyAdjustment = async () => {
-    if (!targetFee) return;
+    if (!targetV3Fee) return;
 
-    const feeId = targetFee.id;
+    const feeId = targetV3Fee.id;
     const itemType = adjustTypeByFee[feeId] ?? "fine";
     const label = (adjustLabelByFee[feeId] ?? "").trim();
     const amount = Number(adjustAmountByFee[feeId] ?? 0);
@@ -602,23 +696,39 @@ export default function AdminFeesPage() {
                 <p className="text-sm font-semibold text-slate-900">Record Payment</p>
               </div>
               <p className="mb-2 text-xs text-slate-500">
-                Target Fee: {targetFee ? `${targetFee.structureName} (${money(targetFee.dueTotal)} due)` : "No active fee"}
+                Target Fee: {targetPayment ? `${targetPayment.label} (${money(targetPayment.due)} due)` : "No active fee"}
               </p>
               <div className="space-y-2">
                 <input
                   type="number"
                   min={0}
-                  value={targetFee ? (paymentAmountByFee[targetFee.id] ?? 0) : 0}
-                  onChange={(event) => targetFee && setPaymentAmountByFee((prev) => ({ ...prev, [targetFee.id]: Number(event.target.value) }))}
+                  value={targetPayment ? (paymentAmountByFee[targetPayment.key] ?? 0) : 0}
+                  onChange={(event) => targetPayment && setPaymentAmountByFee((prev) => ({ ...prev, [targetPayment.key]: Number(event.target.value) }))}
                   placeholder="Amount"
                   className="h-10 w-full rounded-xl border border-slate-300 px-3 text-sm outline-none focus:border-slate-400"
-                  disabled={!targetFee}
+                  disabled={!targetPayment}
                 />
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => targetPayment && setPaymentAmountByFee((prev) => ({ ...prev, [targetPayment.key]: Number(targetPayment.due.toFixed(2)) }))}
+                    disabled={!targetPayment || targetPayment.due <= 0}
+                    className="rounded-lg border border-slate-300 px-2.5 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60"
+                  >
+                    Full Due
+                  </button>
+                  <button
+                    onClick={() => targetPayment && setPaymentAmountByFee((prev) => ({ ...prev, [targetPayment.key]: Number((targetPayment.due / 2).toFixed(2)) }))}
+                    disabled={!targetPayment || targetPayment.due <= 0}
+                    className="rounded-lg border border-slate-300 px-2.5 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60"
+                  >
+                    50%
+                  </button>
+                </div>
                 <select
-                  value={targetFee ? (paymentModeByFee[targetFee.id] ?? "Cash") : "Cash"}
-                  onChange={(event) => targetFee && setPaymentModeByFee((prev) => ({ ...prev, [targetFee.id]: event.target.value }))}
+                  value={targetPayment ? (paymentModeByFee[targetPayment.key] ?? "Cash") : "Cash"}
+                  onChange={(event) => targetPayment && setPaymentModeByFee((prev) => ({ ...prev, [targetPayment.key]: event.target.value }))}
                   className="h-10 w-full rounded-xl border border-slate-300 px-3 text-sm outline-none focus:border-slate-400"
-                  disabled={!targetFee}
+                  disabled={!targetPayment}
                 >
                   <option value="Cash">Cash</option>
                   <option value="UPI">UPI</option>
@@ -627,25 +737,25 @@ export default function AdminFeesPage() {
                   <option value="Bank Transfer">Bank Transfer</option>
                 </select>
                 <input
-                  value={targetFee ? (transactionIdByFee[targetFee.id] ?? "") : ""}
-                  onChange={(event) => targetFee && setTransactionIdByFee((prev) => ({ ...prev, [targetFee.id]: event.target.value }))}
+                  value={targetPayment ? (transactionIdByFee[targetPayment.key] ?? "") : ""}
+                  onChange={(event) => targetPayment && setTransactionIdByFee((prev) => ({ ...prev, [targetPayment.key]: event.target.value }))}
                   placeholder="Transaction ID"
                   className="h-10 w-full rounded-xl border border-slate-300 px-3 text-sm outline-none focus:border-slate-400"
-                  disabled={!targetFee}
+                  disabled={!targetPayment}
                 />
                 <input
-                  value={targetFee ? (receiptNoByFee[targetFee.id] ?? "") : ""}
-                  onChange={(event) => targetFee && setReceiptNoByFee((prev) => ({ ...prev, [targetFee.id]: event.target.value }))}
+                  value={targetPayment ? (receiptNoByFee[targetPayment.key] ?? "") : ""}
+                  onChange={(event) => targetPayment && setReceiptNoByFee((prev) => ({ ...prev, [targetPayment.key]: event.target.value }))}
                   placeholder="Receipt number"
                   className="h-10 w-full rounded-xl border border-slate-300 px-3 text-sm outline-none focus:border-slate-400"
-                  disabled={!targetFee}
+                  disabled={!targetPayment}
                 />
                 <button
                   onClick={() => void recordPayment()}
-                  disabled={!targetFee || payingFeeId === targetFee.id}
+                  disabled={!targetPayment || payingFeeId === targetPayment.key || targetPayment.due <= 0}
                   className="h-10 w-full rounded-xl bg-slate-900 px-4 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:opacity-60"
                 >
-                  {targetFee && payingFeeId === targetFee.id ? "Recording..." : "Record Payment"}
+                  {targetPayment && payingFeeId === targetPayment.key ? "Recording..." : "Record Payment"}
                 </button>
               </div>
             </section>
@@ -657,37 +767,37 @@ export default function AdminFeesPage() {
               </div>
               <div className="space-y-2">
                 <select
-                  value={targetFee ? (adjustTypeByFee[targetFee.id] ?? "fine") : "fine"}
-                  onChange={(event) => targetFee && setAdjustTypeByFee((prev) => ({ ...prev, [targetFee.id]: event.target.value as "discount" | "fine" | "extra" }))}
+                  value={targetV3Fee ? (adjustTypeByFee[targetV3Fee.id] ?? "fine") : "fine"}
+                  onChange={(event) => targetV3Fee && setAdjustTypeByFee((prev) => ({ ...prev, [targetV3Fee.id]: event.target.value as "discount" | "fine" | "extra" }))}
                   className="h-10 w-full rounded-xl border border-slate-300 px-3 text-sm outline-none focus:border-slate-400"
-                  disabled={!targetFee}
+                  disabled={!targetV3Fee}
                 >
                   <option value="fine">Late Fine</option>
                   <option value="discount">Discount</option>
                   <option value="extra">Extra Charge</option>
                 </select>
                 <input
-                  value={targetFee ? (adjustLabelByFee[targetFee.id] ?? "") : ""}
-                  onChange={(event) => targetFee && setAdjustLabelByFee((prev) => ({ ...prev, [targetFee.id]: event.target.value }))}
+                  value={targetV3Fee ? (adjustLabelByFee[targetV3Fee.id] ?? "") : ""}
+                  onChange={(event) => targetV3Fee && setAdjustLabelByFee((prev) => ({ ...prev, [targetV3Fee.id]: event.target.value }))}
                   placeholder="Label"
                   className="h-10 w-full rounded-xl border border-slate-300 px-3 text-sm outline-none focus:border-slate-400"
-                  disabled={!targetFee}
+                  disabled={!targetV3Fee}
                 />
                 <input
                   type="number"
                   min={0}
-                  value={targetFee ? (adjustAmountByFee[targetFee.id] ?? 0) : 0}
-                  onChange={(event) => targetFee && setAdjustAmountByFee((prev) => ({ ...prev, [targetFee.id]: Number(event.target.value) }))}
+                  value={targetV3Fee ? (adjustAmountByFee[targetV3Fee.id] ?? 0) : 0}
+                  onChange={(event) => targetV3Fee && setAdjustAmountByFee((prev) => ({ ...prev, [targetV3Fee.id]: Number(event.target.value) }))}
                   placeholder="Amount"
                   className="h-10 w-full rounded-xl border border-slate-300 px-3 text-sm outline-none focus:border-slate-400"
-                  disabled={!targetFee}
+                  disabled={!targetV3Fee}
                 />
                 <button
                   onClick={() => void applyAdjustment()}
-                  disabled={!targetFee || adjustingFeeId === targetFee.id}
+                  disabled={!targetV3Fee || adjustingFeeId === targetV3Fee.id}
                   className="h-10 w-full rounded-xl border border-slate-300 px-4 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:opacity-60"
                 >
-                  {targetFee && adjustingFeeId === targetFee.id ? "Applying..." : "Apply"}
+                  {targetV3Fee && adjustingFeeId === targetV3Fee.id ? "Applying..." : "Apply"}
                 </button>
               </div>
             </section>

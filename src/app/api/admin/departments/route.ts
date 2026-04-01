@@ -28,10 +28,24 @@ export async function POST(request: Request) {
 
   try {
     const body = schema.parse(await request.json());
+    const normalizedName = body.name.trim();
+    if (normalizedName.length < 2) return apiError("Department name is too short", 400);
+
     const supabase = getSupabaseAdmin();
+
+    const { data: existingDepartment, error: existingDepartmentError } = await supabase
+      .from("departments")
+      .select("id")
+      .eq("college_id", ctx.collegeId)
+      .ilike("name", normalizedName)
+      .maybeSingle();
+
+    if (existingDepartmentError) return apiError(existingDepartmentError.message, 500);
+    if (existingDepartment) return apiError("Department already exists", 400);
+
     const { data, error } = await supabase
       .from("departments")
-      .insert({ college_id: ctx.collegeId, name: body.name })
+      .insert({ college_id: ctx.collegeId, name: normalizedName })
       .select("*")
       .single();
 

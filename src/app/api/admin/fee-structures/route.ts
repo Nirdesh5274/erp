@@ -13,6 +13,7 @@ const componentSchema = z.object({
 
 const postSchema = z.object({
   slotId: z.string().uuid(),
+  semester: z.number().int().min(1).max(12),
   name: z.string().min(1),
   description: z.string().trim().max(400).optional(),
   academicYear: z.string().min(1),
@@ -34,6 +35,11 @@ function isMissingDescriptionColumn(message: string | undefined) {
     || (message ?? "").toLowerCase().includes("column description does not exist");
 }
 
+function isMissingSemesterColumn(message: string | undefined) {
+  const msg = (message ?? "").toLowerCase();
+  return msg.includes("semester") && (msg.includes("column") || msg.includes("schema cache"));
+}
+
 export async function GET() {
   try {
     const ctx = await getRequestContext();
@@ -43,16 +49,25 @@ export async function GET() {
     const supabase = getSupabaseAdmin();
     let { data: structures, error: structuresError } = await supabase
       .from("fee_structures")
-      .select("id,college_id,slot_id,name,description,academic_year,is_active,created_at,updated_at")
+      .select("id,college_id,slot_id,semester,name,description,academic_year,is_active,created_at,updated_at")
       .eq("college_id", ctx.collegeId)
       .order("updated_at", { ascending: false });
+
+    if (structuresError && isMissingSemesterColumn(structuresError.message)) {
+      return apiError("Semester field is missing in DB. Run latest migration to enable semester-wise fee structures.", 400);
+    }
 
     if (structuresError && isMissingDescriptionColumn(structuresError.message)) {
       const fallback = await supabase
         .from("fee_structures")
-        .select("id,college_id,slot_id,name,academic_year,is_active,created_at,updated_at")
+        .select("id,college_id,slot_id,semester,name,academic_year,is_active,created_at,updated_at")
         .eq("college_id", ctx.collegeId)
         .order("updated_at", { ascending: false });
+
+      if (fallback.error && isMissingSemesterColumn(fallback.error.message)) {
+        return apiError("Semester field is missing in DB. Run latest migration to enable semester-wise fee structures.", 400);
+      }
+
       structures = (fallback.data ?? []).map((row) => ({ ...row, description: null }));
       structuresError = fallback.error;
     }
@@ -89,6 +104,7 @@ export async function GET() {
       (structures ?? []).map((row) => ({
         id: row.id,
         slotId: row.slot_id,
+        semester: row.semester,
         name: row.name,
         description: row.description,
         academicYear: row.academic_year,
@@ -115,6 +131,7 @@ export async function POST(request: Request) {
     const basePayload = {
       college_id: ctx.collegeId,
       slot_id: body.slotId,
+      semester: body.semester,
       name: body.name,
       academic_year: body.academicYear,
       is_active: body.isActive ?? true,
@@ -122,21 +139,47 @@ export async function POST(request: Request) {
       updated_by: ctx.userId,
     };
 
+    if (basePayload.is_active) {
+      const { error: deactivateError } = await supabase
+        .from("fee_structures")
+        .update({ is_active: false, updated_by: ctx.userId })
+        .eq("college_id", ctx.collegeId)
+        .eq("slot_id", body.slotId)
+        .eq("semester", body.semester)
+        .eq("academic_year", body.academicYear)
+        .eq("is_active", true);
+
+      if (deactivateError && isMissingSemesterColumn(deactivateError.message)) {
+        return apiError("Semester field is missing in DB. Run latest migration to enable semester-wise fee structures.", 400);
+      }
+
+      if (deactivateError) return apiError(deactivateError.message, 500);
+    }
+
     let { data: structure, error: structureError } = await supabase
       .from("fee_structures")
       .insert({
         ...basePayload,
         description: body.description ?? null,
       })
-      .select("id,slot_id,name,description,academic_year,is_active,created_at,updated_at")
+      .select("id,slot_id,semester,name,description,academic_year,is_active,created_at,updated_at")
       .single();
+
+    if (structureError && isMissingSemesterColumn(structureError.message)) {
+      return apiError("Semester field is missing in DB. Run latest migration to enable semester-wise fee structures.", 400);
+    }
 
     if (structureError && isMissingDescriptionColumn(structureError.message)) {
       const fallback = await supabase
         .from("fee_structures")
         .insert(basePayload)
-        .select("id,slot_id,name,academic_year,is_active,created_at,updated_at")
+        .select("id,slot_id,semester,name,academic_year,is_active,created_at,updated_at")
         .single();
+
+      if (fallback.error && isMissingSemesterColumn(fallback.error.message)) {
+        return apiError("Semester field is missing in DB. Run latest migration to enable semester-wise fee structures.", 400);
+      }
+
       structure = fallback.data ? { ...fallback.data, description: null } : null;
       structureError = fallback.error;
     }
@@ -161,9 +204,14 @@ export async function POST(request: Request) {
 
     const { data: slotStudents, error: studentsError } = await supabase
       .from("students")
-      .select("id,admission_id")
+      .select("id,admission_id,current_semester")
       .eq("college_id", ctx.collegeId)
-      .eq("slot_id", body.slotId);
+      .eq("slot_id", body.slotId)
+      .eq("current_semester", body.semester);
+
+    if (studentsError && isMissingSemesterColumn(studentsError.message)) {
+      return apiError("Semester field is missing in DB. Run latest migration to enable semester-wise fee structures.", 400);
+    }
 
     if (studentsError) return apiError(studentsError.message, 500);
 
@@ -235,6 +283,7 @@ export async function POST(request: Request) {
       {
         id: structure.id,
         slotId: structure.slot_id,
+        semester: structure.semester,
         name: structure.name,
         description: structure.description,
         academicYear: structure.academic_year,

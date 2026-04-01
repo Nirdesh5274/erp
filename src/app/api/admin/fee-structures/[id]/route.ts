@@ -13,6 +13,7 @@ const componentSchema = z.object({
 const patchSchema = z.object({
   name: z.string().min(1).optional(),
   description: z.string().trim().max(400).optional(),
+  semester: z.number().int().min(1).max(12).optional(),
   academicYear: z.string().min(1).optional(),
   isActive: z.boolean().optional(),
   components: z.array(componentSchema).optional(),
@@ -30,6 +31,11 @@ function toKey(value: string) {
 function isMissingDescriptionColumn(message: string | undefined) {
   return (message ?? "").toLowerCase().includes("fee_structures.description")
     || (message ?? "").toLowerCase().includes("column description does not exist");
+}
+
+function isMissingSemesterColumn(message: string | undefined) {
+  const msg = (message ?? "").toLowerCase();
+  return msg.includes("semester") && (msg.includes("column") || msg.includes("schema cache"));
 }
 
 export async function PATCH(
@@ -51,6 +57,7 @@ export async function PATCH(
     };
     if (body.name !== undefined) updatePayload.name = body.name;
     if (body.description !== undefined) updatePayload.description = body.description;
+    if (body.semester !== undefined) updatePayload.semester = body.semester;
     if (body.academicYear !== undefined) updatePayload.academic_year = body.academicYear;
     if (body.isActive !== undefined) updatePayload.is_active = body.isActive;
 
@@ -59,8 +66,12 @@ export async function PATCH(
       .update(updatePayload)
       .eq("id", id)
       .eq("college_id", ctx.collegeId)
-      .select("id,slot_id,name,academic_year,is_active,created_at,updated_at")
+      .select("id,slot_id,semester,name,academic_year,is_active,created_at,updated_at")
       .single();
+
+    if (structureError && isMissingSemesterColumn(structureError.message)) {
+      return apiError("Semester field is missing in DB. Run latest migration to enable semester-wise fee structures.", 400);
+    }
 
     if (structureError && isMissingDescriptionColumn(structureError.message) && "description" in updatePayload) {
       const fallbackPayload = { ...updatePayload };
@@ -70,7 +81,7 @@ export async function PATCH(
         .update(fallbackPayload)
         .eq("id", id)
         .eq("college_id", ctx.collegeId)
-        .select("id,slot_id,name,academic_year,is_active,created_at,updated_at")
+        .select("id,slot_id,semester,name,academic_year,is_active,created_at,updated_at")
         .single();
       structure = fallback.data;
       structureError = fallback.error;
@@ -110,6 +121,7 @@ export async function PATCH(
     return apiSuccess({
       id: structure.id,
       slotId: structure.slot_id,
+      semester: structure.semester,
       name: structure.name,
       academicYear: structure.academic_year,
       isActive: structure.is_active,

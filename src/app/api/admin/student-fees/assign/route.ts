@@ -13,6 +13,11 @@ const postSchema = z.object({
   notes: z.string().trim().max(300).optional(),
 });
 
+function isMissingSemesterColumn(message: string | undefined) {
+  const msg = (message ?? "").toLowerCase();
+  return msg.includes("semester") && (msg.includes("column") || msg.includes("schema cache"));
+}
+
 export async function POST(request: Request) {
   try {
     const ctx = await getRequestContext();
@@ -24,12 +29,18 @@ export async function POST(request: Request) {
 
     const { data: student, error: studentError } = await supabase
       .from("students")
-      .select("id,admission_id,slot_id")
+      .select("id,admission_id,slot_id,current_semester")
       .eq("id", body.studentId)
       .eq("college_id", ctx.collegeId)
       .single();
 
+    if (studentError && isMissingSemesterColumn(studentError.message)) {
+      return apiError("Semester field is missing in DB. Run latest migration to enable semester-wise fee structures.", 400);
+    }
+
     if (studentError || !student) return apiError("Student not found", 404);
+
+    const currentSemester = Number(student.current_semester ?? 1);
 
     let structureId = body.feeStructureId ?? null;
     if (!structureId) {
@@ -38,25 +49,37 @@ export async function POST(request: Request) {
         .select("id")
         .eq("college_id", ctx.collegeId)
         .eq("slot_id", body.slotId)
+        .eq("semester", currentSemester)
         .eq("is_active", true)
         .order("updated_at", { ascending: false })
         .limit(1)
         .maybeSingle();
 
+      if (structureError && isMissingSemesterColumn(structureError.message)) {
+        return apiError("Semester field is missing in DB. Run latest migration to enable semester-wise fee structures.", 400);
+      }
+
       if (structureError) return apiError(structureError.message, 500);
-      if (!structure) return apiError("No active fee structure found for selected slot", 400);
+      if (!structure) return apiError(`No active fee structure found for selected slot and semester ${currentSemester}`, 400);
       structureId = structure.id;
     }
 
     const { data: structure, error: loadStructureError } = await supabase
       .from("fee_structures")
-      .select("id,slot_id")
+      .select("id,slot_id,semester")
       .eq("id", structureId)
       .eq("college_id", ctx.collegeId)
       .single();
 
+    if (loadStructureError && isMissingSemesterColumn(loadStructureError.message)) {
+      return apiError("Semester field is missing in DB. Run latest migration to enable semester-wise fee structures.", 400);
+    }
+
     if (loadStructureError || !structure) return apiError("Fee structure not found", 404);
     if (structure.slot_id !== body.slotId) return apiError("Fee structure does not belong to selected slot", 400);
+    if (Number(structure.semester ?? 1) !== currentSemester) {
+      return apiError(`Fee structure semester does not match student semester (${currentSemester})`, 400);
+    }
 
     const { data: components, error: componentsError } = await supabase
       .from("fee_components")

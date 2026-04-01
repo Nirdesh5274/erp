@@ -11,9 +11,15 @@ interface ProfileResponse {
     departmentName: string | null;
     slotId: string | null;
     course: string | null;
+    currentSemester: number | null;
     admissionId: string | null;
   };
   subjects: Array<{ id: string; name: string; facultyName: string | null }>;
+}
+
+function isMissingCurrentSemesterColumnError(message: string) {
+  const text = message.toLowerCase();
+  return text.includes("current_semester") && (text.includes("column") || text.includes("schema cache"));
 }
 
 export async function GET() {
@@ -33,14 +39,40 @@ export async function GET() {
 
     if (userError) return apiError(userError.message, 500);
 
-    const { data: studentRow, error: studentError } = await supabase
+    const { data: studentRowWithSemester, error: studentWithSemesterError } = await supabase
       .from("students")
-      .select("id,department_id,slot_id,admission_id,name,email")
+      .select("id,department_id,slot_id,admission_id,name,email,current_semester")
       .eq("college_id", ctx.collegeId)
       .eq("user_id", ctx.userId)
       .maybeSingle();
 
-    if (studentError) return apiError(studentError.message, 500);
+    let studentRow = studentRowWithSemester as
+      | {
+          id: string;
+          department_id: string | null;
+          slot_id: string | null;
+          admission_id: string | null;
+          name: string;
+          email: string;
+          current_semester?: number | null;
+        }
+      | null;
+
+    if (studentWithSemesterError) {
+      if (!isMissingCurrentSemesterColumnError(studentWithSemesterError.message)) {
+        return apiError(studentWithSemesterError.message, 500);
+      }
+
+      const { data: fallbackStudentRow, error: fallbackStudentError } = await supabase
+        .from("students")
+        .select("id,department_id,slot_id,admission_id,name,email")
+        .eq("college_id", ctx.collegeId)
+        .eq("user_id", ctx.userId)
+        .maybeSingle();
+
+      if (fallbackStudentError) return apiError(fallbackStudentError.message, 500);
+      studentRow = fallbackStudentRow as typeof studentRow;
+    }
 
     const departmentId = studentRow?.department_id ?? userRow?.department_id ?? null;
 
@@ -93,6 +125,7 @@ export async function GET() {
         departmentName: departmentRow?.name ?? null,
         slotId: studentRow?.slot_id ?? null,
         course: slotRow?.course ?? null,
+        currentSemester: studentRow?.current_semester ?? null,
         admissionId: studentRow?.admission_id ?? null,
       },
       subjects: (subjectsRows ?? []).map((s) => ({

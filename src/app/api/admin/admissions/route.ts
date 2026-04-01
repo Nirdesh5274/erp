@@ -9,6 +9,7 @@ const schema = z.object({
   studentName: z.string().min(2),
   email: z.string().email(),
   phone: z.string().regex(/^\d{10}$/, "Phone number must be exactly 10 digits").optional().nullable(),
+  currentSemester: z.number().int().min(1).max(12).optional(),
   feeAmount: z.number().nonnegative(),
 });
 
@@ -17,10 +18,16 @@ interface AdmissionDbRow {
   student_name: string;
   email: string;
   phone: string | null;
+  current_semester?: number | null;
   status: string;
   created_at: string;
   department_id: string;
   slot_id: string;
+}
+
+function isMissingCurrentSemesterColumnError(message: string) {
+  const text = message.toLowerCase();
+  return text.includes("current_semester") && (text.includes("column") || text.includes("schema cache"));
 }
 
 function generateTempPassword() {
@@ -34,28 +41,63 @@ export async function GET() {
     if (!ensureRole(ctx.role, ["Admin", "HOD", "Faculty"])) return apiError("Forbidden", 403);
     if (!ctx.collegeId) return apiError("Missing college context", 400);
 
+    let scopedDepartmentId: string | null = null;
+    if (ctx.role === "HOD" || ctx.role === "Faculty") {
+      scopedDepartmentId = ctx.departmentId || null;
+      if (!scopedDepartmentId) return apiError("Department context missing", 400);
+    }
+
     const supabase = getSupabaseAdmin();
     let query = supabase
       .from("admissions")
-      .select("id,student_name,email,phone,status,created_at,department_id,slot_id")
+      .select("id,student_name,email,phone,current_semester,status,created_at,department_id,slot_id")
       .eq("college_id", ctx.collegeId)
       .order("created_at", { ascending: false });
 
-    if (ctx.role === "HOD" || ctx.role === "Faculty") {
-      const departmentId = ctx.departmentId || null;
-      if (!departmentId) return apiError("Department context missing", 400);
-      query = query.eq("department_id", departmentId);
+    if (scopedDepartmentId) {
+      query = query.eq("department_id", scopedDepartmentId);
     }
 
     const { data, error } = await query;
 
-    if (error) return apiError(error.message, 500);
+    if (error && !isMissingCurrentSemesterColumnError(error.message)) return apiError(error.message, 500);
+
+    if (error) {
+      let fallbackQuery = supabase
+        .from("admissions")
+        .select("id,student_name,email,phone,status,created_at,department_id,slot_id")
+        .eq("college_id", ctx.collegeId)
+        .order("created_at", { ascending: false });
+
+      if (scopedDepartmentId) {
+        fallbackQuery = fallbackQuery.eq("department_id", scopedDepartmentId);
+      }
+
+      const fallback = await fallbackQuery;
+
+      if (fallback.error) return apiError(fallback.error.message, 500);
+
+      const admissions = ((fallback.data ?? []) as AdmissionDbRow[]).map((item) => ({
+        id: item.id,
+        studentName: item.student_name,
+        email: item.email,
+        phone: item.phone,
+        currentSemester: null,
+        status: item.status,
+        createdAt: item.created_at,
+        departmentId: item.department_id,
+        slotId: item.slot_id,
+      }));
+
+      return apiSuccess(admissions);
+    }
 
     const admissions = ((data ?? []) as AdmissionDbRow[]).map((item) => ({
       id: item.id,
       studentName: item.student_name,
       email: item.email,
       phone: item.phone,
+      currentSemester: item.current_semester ?? null,
       status: item.status,
       createdAt: item.created_at,
       departmentId: item.department_id,
@@ -87,6 +129,7 @@ export async function POST(request: Request) {
     const supabase = getSupabaseAdmin();
     const normalizedEmail = body.email.trim().toLowerCase();
     const normalizedPhone = body.phone?.trim() || null;
+    const normalizedSemester = body.currentSemester ?? 1;
 
     const { data: existingAdmissionByEmail, error: existingAdmissionByEmailError } = await supabase
       .from("admissions")
@@ -123,6 +166,30 @@ export async function POST(request: Request) {
     if (error) return apiError(error.message, 400);
 
     const admission = Array.isArray(data) ? data[0] : data;
+
+    if (admission?.admission_id) {
+      const { error: admissionSemesterError } = await supabase
+        .from("admissions")
+        .update({ current_semester: normalizedSemester })
+        .eq("id", admission.admission_id)
+        .eq("college_id", ctx.collegeId);
+
+      if (admissionSemesterError && !isMissingCurrentSemesterColumnError(admissionSemesterError.message)) {
+        return apiError(admissionSemesterError.message, 400);
+      }
+    }
+
+    if (admission?.student_id) {
+      const { error: studentSemesterError } = await supabase
+        .from("students")
+        .update({ current_semester: normalizedSemester })
+        .eq("id", admission.student_id)
+        .eq("college_id", ctx.collegeId);
+
+      if (studentSemesterError && !isMissingCurrentSemesterColumnError(studentSemesterError.message)) {
+        return apiError(studentSemesterError.message, 400);
+      }
+    }
 
     let tempPassword: string | null = null;
 

@@ -17,6 +17,7 @@ interface FeeComponent {
 interface FeeStructure {
   id: string;
   slotId: string;
+  semester: number;
   name: string;
   description: string | null;
   academicYear: string;
@@ -40,6 +41,7 @@ export default function AdminFeeStructuresPage() {
   const [description, setDescription] = useState("");
   const [academicYear, setAcademicYear] = useState("");
   const [slotId, setSlotId] = useState("");
+  const [semester, setSemester] = useState(1);
   const [components, setComponents] = useState<FeeComponent[]>([
     { componentKey: "tuition_fee", componentName: "Tuition Fee", amount: 0, sortOrder: 0 },
   ]);
@@ -100,6 +102,7 @@ export default function AdminFeeStructuresPage() {
           description: description.trim() || undefined,
           academicYear: academicYear.trim(),
           slotId,
+          semester,
           isActive: true,
           components: components.map((component, idx) => ({
             componentKey: component.componentKey.trim() || component.componentName,
@@ -114,9 +117,10 @@ export default function AdminFeeStructuresPage() {
       setDescription("");
       setAcademicYear("");
       setSlotId("");
+      setSemester(1);
       setComponents([{ componentKey: "tuition_fee", componentName: "Tuition Fee", amount: 0, sortOrder: 0 }]);
       await load();
-      toast.success("Fee structure saved and auto-applied to slot students");
+      toast.success("Fee structure saved and auto-applied to matching semester students");
     } catch (saveError) {
       const message = saveError instanceof Error ? saveError.message : "Unable to create structure";
       setError(message);
@@ -187,6 +191,16 @@ export default function AdminFeeStructuresPage() {
               <option key={slot.id} value={slot.id}>{slot.course}</option>
             ))}
           </select>
+          <select value={semester} onChange={(e) => setSemester(Number(e.target.value))} className="rounded-lg border border-slate-300 px-3 py-2 text-sm">
+            {Array.from({ length: 12 }, (_, index) => {
+              const sem = index + 1;
+              return (
+                <option key={sem} value={sem}>
+                  Semester {sem}
+                </option>
+              );
+            })}
+          </select>
         </div>
 
         <div className="mt-3 space-y-2">
@@ -229,7 +243,7 @@ export default function AdminFeeStructuresPage() {
             {saving ? "Saving..." : "Save structure"}
           </button>
         </div>
-        <p className="mt-3 text-xs text-slate-600">On save, this structure is automatically applied to all students of the selected slot.</p>
+        <p className="mt-3 text-xs text-slate-600">On save, this structure is automatically applied to students of selected slot and semester.</p>
       </SectionCard>
 
       <SectionCard title="Saved Structures" description="Toggle active state or remove legacy templates">
@@ -240,7 +254,7 @@ export default function AdminFeeStructuresPage() {
                 <div>
                   <p className="font-semibold text-slate-900">{structure.name}</p>
                   <p className="text-xs text-slate-600">
-                    {structure.academicYear} · {slotById.get(structure.slotId) ?? "Unknown slot"} · {structure.components.length} components
+                    {structure.academicYear} · Sem {structure.semester} · {slotById.get(structure.slotId) ?? "Unknown slot"} · {structure.components.length} components
                   </p>
                   {structure.description ? <p className="text-xs text-slate-600">{structure.description}</p> : null}
                 </div>

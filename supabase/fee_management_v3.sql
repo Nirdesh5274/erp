@@ -3,10 +3,55 @@
 
 create extension if not exists pgcrypto;
 
+-- Semester tracking for admission and student lifecycle
+alter table if exists admissions
+  add column if not exists current_semester int;
+
+alter table if exists students
+  add column if not exists current_semester int;
+
+update admissions
+set current_semester = 1
+where current_semester is null;
+
+update students
+set current_semester = 1
+where current_semester is null;
+
+alter table if exists admissions
+  alter column current_semester set default 1;
+
+alter table if exists students
+  alter column current_semester set default 1;
+
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_constraint
+    where conname = 'admissions_current_semester_check'
+  ) then
+    alter table admissions
+      add constraint admissions_current_semester_check
+      check (current_semester between 1 and 12);
+  end if;
+
+  if not exists (
+    select 1
+    from pg_constraint
+    where conname = 'students_current_semester_check'
+  ) then
+    alter table students
+      add constraint students_current_semester_check
+      check (current_semester between 1 and 12);
+  end if;
+end $$;
+
 create table if not exists fee_structures (
   id uuid primary key default gen_random_uuid(),
   college_id uuid not null references colleges(id) on delete cascade,
   slot_id uuid not null references slots(id) on delete cascade,
+  semester int not null default 1,
   name text not null,
   description text,
   academic_year text not null,
@@ -15,8 +60,39 @@ create table if not exists fee_structures (
   updated_by uuid references users(id) on delete set null,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
-  unique(college_id, slot_id, name, academic_year)
+  unique(college_id, slot_id, semester, name, academic_year),
+  check (semester between 1 and 12)
 );
+
+alter table if exists fee_structures add column if not exists semester int;
+update fee_structures set semester = 1 where semester is null;
+alter table if exists fee_structures alter column semester set default 1;
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint where conname = 'fee_structures_semester_check'
+  ) then
+    alter table fee_structures
+      add constraint fee_structures_semester_check
+      check (semester between 1 and 12);
+  end if;
+
+  if exists (
+    select 1 from pg_constraint where conname = 'fee_structures_college_id_slot_id_name_academic_year_key'
+  ) then
+    alter table fee_structures
+      drop constraint fee_structures_college_id_slot_id_name_academic_year_key;
+  end if;
+
+  if not exists (
+    select 1 from pg_constraint where conname = 'fee_structures_college_slot_sem_name_year_key'
+  ) then
+    alter table fee_structures
+      add constraint fee_structures_college_slot_sem_name_year_key
+      unique (college_id, slot_id, semester, name, academic_year);
+  end if;
+end $$;
 
 create table if not exists fee_components (
   id uuid primary key default gen_random_uuid(),
@@ -99,6 +175,7 @@ create table if not exists receipts (
 );
 
 create index if not exists idx_fee_structures_college_slot on fee_structures(college_id, slot_id, is_active);
+create index if not exists idx_fee_structures_semester on fee_structures(college_id, slot_id, semester, is_active);
 
 alter table if exists fee_structures add column if not exists description text;
 create index if not exists idx_fee_components_structure on fee_components(fee_structure_id, sort_order);

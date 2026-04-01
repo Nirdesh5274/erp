@@ -24,6 +24,7 @@ const navItems = [
   { href: "/admin/rooms", label: "Rooms", icon: DoorOpen },
   { href: "/admin/labs", label: "Labs", icon: ClipboardCheck },
   { href: "/admin/admissions", label: "Admissions", icon: UserPlus },
+  { href: "/admin/departments", label: "Departments", icon: Building },
   { href: "/admin/users", label: "Users", icon: UsersRound },
   { href: "/admin/students", label: "Students", icon: GraduationCap },
   { href: "/admin/fees", label: "Fees", icon: ReceiptText },

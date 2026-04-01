@@ -351,6 +351,34 @@ alter table students add column if not exists temp_password text;
 alter table students add column if not exists must_change_password boolean default true;
 alter table students add column if not exists password_generated_at timestamptz;
 
+alter table admissions add column if not exists current_semester int;
+alter table students add column if not exists current_semester int;
+
+update admissions set current_semester = 1 where current_semester is null;
+update students set current_semester = 1 where current_semester is null;
+
+alter table admissions alter column current_semester set default 1;
+alter table students alter column current_semester set default 1;
+
+do $$
+begin
+	if not exists (
+		select 1 from pg_constraint where conname = 'admissions_current_semester_check'
+	) then
+		alter table admissions
+			add constraint admissions_current_semester_check
+			check (current_semester between 1 and 12);
+	end if;
+
+	if not exists (
+		select 1 from pg_constraint where conname = 'students_current_semester_check'
+	) then
+		alter table students
+			add constraint students_current_semester_check
+			check (current_semester between 1 and 12);
+	end if;
+end $$;
+
 -- Attendance locking metadata stored on lectures
 -- Use immutable expression for generated column (timestamptz to date must be timezone-stable)
 alter table lectures add column if not exists lecture_date date generated always as ((starts_at at time zone 'UTC')::date) stored;

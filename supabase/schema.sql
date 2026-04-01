@@ -104,6 +104,7 @@ create table if not exists admissions (
   student_name text not null,
   email text not null,
   phone text,
+  current_semester int not null default 1 check (current_semester between 1 and 12),
   status text not null default 'Approved',
   created_at timestamptz not null default now()
 );
@@ -117,6 +118,7 @@ create table if not exists students (
   user_id uuid references users(id) on delete set null,
   name text not null,
   email text not null,
+  current_semester int not null default 1 check (current_semester between 1 and 12),
   created_at timestamptz not null default now()
 );
 
@@ -212,12 +214,12 @@ begin
     raise exception 'No seats available';
   end if;
 
-  insert into admissions(college_id, department_id, slot_id, student_name, email, phone)
-  values (p_college_id, p_department_id, p_slot_id, p_student_name, p_email, p_phone)
+  insert into admissions(college_id, department_id, slot_id, student_name, email, phone, current_semester)
+  values (p_college_id, p_department_id, p_slot_id, p_student_name, p_email, p_phone, 1)
   returning id into v_admission;
 
-  insert into students(college_id, department_id, slot_id, admission_id, name, email)
-  values (p_college_id, p_department_id, p_slot_id, v_admission, p_student_name, p_email)
+  insert into students(college_id, department_id, slot_id, admission_id, name, email, current_semester)
+  values (p_college_id, p_department_id, p_slot_id, v_admission, p_student_name, p_email, 1)
   returning id into v_student;
 
   insert into fees(college_id, admission_id, student_id, amount, due_amount, status)

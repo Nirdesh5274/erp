@@ -9,6 +9,7 @@ interface StudentRow {
   name: string;
   email: string;
   department_id: string;
+  current_semester?: number | null;
   created_at: string;
   temp_password?: string | null;
   must_change_password?: boolean | null;
@@ -35,12 +36,39 @@ interface AdmissionCreateResponse {
   } | null;
 }
 
+interface SemesterUpgradeResponse {
+  studentId: string;
+  previousSemester: number;
+  currentSemester: number;
+  feeStructureId?: string;
+  feeGenerated?: boolean;
+  generatedFeeId?: string | null;
+  upgradedAt: string;
+}
+
+interface BulkSemesterUpgradeResponse {
+  slotId: string;
+  fromSemester: number;
+  targetSemester: number;
+  totalCandidates: number;
+  upgradedCount: number;
+  skippedCount: number;
+  results: Array<{
+    studentId: string;
+    name: string;
+    upgraded: boolean;
+    message: string;
+  }>;
+}
+
 export default function AdminStudentsPage() {
   const [students, setStudents] = useState<StudentRow[]>([]);
   const [departments, setDepartments] = useState<DepartmentRow[]>([]);
   const [slots, setSlots] = useState<SlotRow[]>([]);
   const [error, setError] = useState("");
   const [regeneratingId, setRegeneratingId] = useState<string | null>(null);
+  const [upgradingId, setUpgradingId] = useState<string | null>(null);
+  const [bulkUpgrading, setBulkUpgrading] = useState(false);
   const [success, setSuccess] = useState("");
 
   const [departmentId, setDepartmentId] = useState("");
@@ -48,6 +76,7 @@ export default function AdminStudentsPage() {
   const [studentName, setStudentName] = useState("");
   const [email, setEmail] = useState("");
   const [phone, setPhone] = useState("");
+  const [currentSemester, setCurrentSemester] = useState(1);
   const [feeAmount, setFeeAmount] = useState(20000);
 
   const deptById = useMemo(() => new Map(departments.map((item) => [item.id, item.name])), [departments]);
@@ -101,10 +130,91 @@ export default function AdminStudentsPage() {
     }
   };
 
+  const upgradeSemester = async (student: StudentRow) => {
+    const currentSemester = Number(student.current_semester ?? 1);
+    const targetSemester = currentSemester + 1;
+
+    if (targetSemester > 12) {
+      setError("Student is already in final semester");
+      return;
+    }
+
+    setUpgradingId(student.id);
+    setError("");
+    setSuccess("");
+
+    try {
+      const data = await apiFetch<SemesterUpgradeResponse>("/api/admin/students", {
+        method: "PATCH",
+        body: JSON.stringify({
+          studentId: student.id,
+          action: "upgradeSemester",
+          targetSemester,
+        }),
+      });
+
+      setSuccess(
+        `Semester upgraded: ${student.name} (${data.previousSemester} -> ${data.currentSemester})${data.feeGenerated ? " | New semester fee generated" : " | Semester fee already exists"}`,
+      );
+      await load();
+    } catch (upgradeError) {
+      setError(upgradeError instanceof Error ? upgradeError.message : "Unable to upgrade semester");
+    } finally {
+      setUpgradingId(null);
+    }
+  };
+
+  const bulkUpgradeSemester = async () => {
+    if (!slotId) {
+      setError("Select a slot before bulk promotion");
+      return;
+    }
+
+    const targetSemester = currentSemester + 1;
+    if (targetSemester > 12) {
+      setError("Target semester cannot be greater than 12");
+      return;
+    }
+
+    setBulkUpgrading(true);
+    setError("");
+    setSuccess("");
+
+    try {
+      const data = await apiFetch<BulkSemesterUpgradeResponse>("/api/admin/students", {
+        method: "PATCH",
+        body: JSON.stringify({
+          action: "bulkUpgradeSemester",
+          slotId,
+          fromSemester: currentSemester,
+          targetSemester,
+        }),
+      });
+
+      const failed = data.results.filter((row) => !row.upgraded);
+      const firstFailure = failed[0];
+
+      setSuccess(
+        `Bulk promotion completed: ${data.upgradedCount}/${data.totalCandidates} upgraded (Sem ${data.fromSemester} -> ${data.targetSemester})${firstFailure ? ` | First skip: ${firstFailure.name} (${firstFailure.message})` : ""}`,
+      );
+
+      await load();
+    } catch (bulkError) {
+      setError(bulkError instanceof Error ? bulkError.message : "Unable to bulk upgrade semester");
+    } finally {
+      setBulkUpgrading(false);
+    }
+  };
+
   const createStudent = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setError("");
     setSuccess("");
+
+    if (phone && phone.length !== 10) {
+      setError("Phone number must be exactly 10 digits");
+      return;
+    }
 
     try {
       const created = await apiFetch<AdmissionCreateResponse>("/api/admin/admissions", {
@@ -115,6 +225,7 @@ export default function AdminStudentsPage() {
           studentName,
           email,
           phone: phone || null,
+          currentSemester,
           feeAmount,
         }),
       });
@@ -191,7 +302,6 @@ export default function AdminStudentsPage() {
             <input
               type="tel"
               inputMode="numeric"
-              pattern="\\d{10}"
               value={phone}
               onChange={(e) => handlePhoneChange(e.target.value)}
               placeholder="10-digit mobile number"
@@ -202,7 +312,35 @@ export default function AdminStudentsPage() {
             <span className="text-xs font-semibold text-slate-600">Admission Fee</span>
             <input type="number" min={0} value={feeAmount} onChange={(e) => setFeeAmount(Number(e.target.value))} placeholder="Admission fee amount" className="w-full rounded-xl border border-slate-300 px-3 py-2" required />
           </label>
-          <button className="rounded-xl bg-teal-700 px-4 py-2 font-semibold text-white md:col-span-3">Add Student</button>
+          <label className="space-y-1">
+            <span className="text-xs font-semibold text-slate-600">Current Semester</span>
+            <select
+              value={currentSemester}
+              onChange={(e) => setCurrentSemester(Number(e.target.value))}
+              className="w-full rounded-xl border border-slate-300 px-3 py-2"
+              required
+            >
+              {Array.from({ length: 12 }, (_, index) => {
+                const semester = index + 1;
+                return (
+                  <option key={semester} value={semester}>
+                    Semester {semester}
+                  </option>
+                );
+              })}
+            </select>
+          </label>
+          <div className="flex flex-wrap gap-2 md:col-span-3">
+            <button className="rounded-xl bg-teal-700 px-4 py-2 font-semibold text-white">Add Student</button>
+            <button
+              type="button"
+              onClick={() => void bulkUpgradeSemester()}
+              disabled={bulkUpgrading || !slotId}
+              className="rounded-xl bg-emerald-700 px-4 py-2 font-semibold text-white disabled:opacity-60"
+            >
+              {bulkUpgrading ? "Promoting..." : `Promote Slot Sem ${currentSemester} -> ${Math.min(currentSemester + 1, 12)}`}
+            </button>
+          </div>
         </form>
       </SectionCard>
 
@@ -215,6 +353,7 @@ export default function AdminStudentsPage() {
               <p className="font-semibold text-slate-800">{student.name}</p>
               <p className="text-slate-600">{student.email}</p>
               <p className="text-teal-700">{deptById.get(student.department_id) ?? "Unknown"}</p>
+              <p className="text-slate-600">Semester: {student.current_semester ?? "N/A"}</p>
               <p className="text-xs text-slate-500">Joined: {new Date(student.created_at).toLocaleDateString()}</p>
               <p className="mt-1 text-xs text-slate-700">
                 Temp Password: {student.temp_password || "Not generated"}
@@ -230,6 +369,17 @@ export default function AdminStudentsPage() {
                 className="mt-2 rounded-lg bg-slate-900 px-3 py-2 text-xs font-semibold text-white disabled:opacity-60"
               >
                 {regeneratingId === student.id ? "Generating..." : "Generate New Password"}
+              </button>
+              <button
+                onClick={() => void upgradeSemester(student)}
+                disabled={upgradingId === student.id || Number(student.current_semester ?? 1) >= 12}
+                className="mt-2 rounded-lg bg-emerald-700 px-3 py-2 text-xs font-semibold text-white disabled:opacity-60"
+              >
+                {upgradingId === student.id
+                  ? "Upgrading..."
+                  : Number(student.current_semester ?? 1) >= 12
+                    ? "Final Semester"
+                    : "Promote to Next Semester"}
               </button>
             </article>
           ))}
