@@ -6,10 +6,24 @@ import { z } from "zod";
 
 const patchSchema = z.object({
   studentId: z.string().uuid().optional(),
-  action: z.enum(["regeneratePassword", "upgradeSemester", "bulkUpgradeSemester"]).optional(),
+  action: z.enum(["regeneratePassword", "upgradeSemester", "bulkUpgradeSemester", "deactivate"]).optional(),
   slotId: z.string().uuid().optional(),
   fromSemester: z.number().int().min(1).max(12).optional(),
   targetSemester: z.number().int().min(1).max(12).optional(),
+  fromClassId: z.string().uuid().optional(),
+  targetClassId: z.string().uuid().optional(),
+  fromSectionId: z.string().uuid().optional(),
+  targetSectionId: z.string().uuid().optional(),
+  targetTerm: z.string().max(20).optional(),
+});
+
+const querySchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  limit: z.coerce.number().int().min(1).max(100).default(20),
+  search: z.string().max(120).optional(),
+  classId: z.string().uuid().optional(),
+  sectionId: z.string().uuid().optional(),
+  status: z.enum(["all", "active", "inactive", "graduated"]).default("all"),
 });
 
 function generateTempPassword() {
@@ -25,6 +39,14 @@ function isMissingCurrentSemesterColumnError(message: string) {
 function isMissingSemesterColumnError(message: string) {
   const text = message.toLowerCase();
   return text.includes("semester") && (text.includes("column") || text.includes("schema cache"));
+}
+
+function isMissingSchoolColumnsError(message: string) {
+  const text = message.toLowerCase();
+  return (
+    (text.includes("class_id") || text.includes("section_id") || text.includes("term"))
+    && (text.includes("column") || text.includes("schema cache"))
+  );
 }
 
 function isOpenDueStatus(status: string | null | undefined) {
@@ -55,6 +77,18 @@ function hasOutstandingAmount(
 
   // Avoid blocking promotion on floating precision dust (for example 0.0000001)
   return effectiveDue > 0.01;
+}
+
+async function isSchoolInstitution(collegeId: string) {
+  const supabase = getSupabaseAdmin();
+  const { data, error } = await supabase
+    .from("colleges")
+    .select("type")
+    .eq("id", collegeId)
+    .maybeSingle();
+
+  if (error) throw new Error(error.message);
+  return data?.type === "school";
 }
 
 async function performSemesterUpgradeForStudent(params: {
@@ -246,22 +280,50 @@ async function performSemesterUpgradeForStudent(params: {
   };
 }
 
-export async function GET() {
+export async function GET(request: Request) {
   try {
     const ctx = await getRequestContext();
     if (!ensureRole(ctx.role, ["Admin", "HOD", "Faculty"])) return apiError("Forbidden", 403);
     if (!ctx.collegeId) return apiError("Missing college context", 400);
+    const isSchool = await isSchoolInstitution(ctx.collegeId);
+
+    const url = new URL(request.url);
+    const query = querySchema.parse({
+      page: url.searchParams.get("page") ?? 1,
+      limit: url.searchParams.get("limit") ?? 20,
+      search: url.searchParams.get("search") ?? undefined,
+      classId: url.searchParams.get("classId") ?? undefined,
+      sectionId: url.searchParams.get("sectionId") ?? undefined,
+      status: url.searchParams.get("status") ?? "all",
+    });
+
+    const offset = (query.page - 1) * query.limit;
+    const searchText = query.search?.trim();
 
     const supabase = getSupabaseAdmin();
     // Required DB columns for temp password lifecycle:
     // alter table students add column if not exists temp_password text;
     // alter table students add column if not exists must_change_password boolean default false;
     // alter table students add column if not exists password_generated_at timestamptz;
-    const { data, error } = await supabase
+    let studentQuery = supabase
       .from("students")
-      .select("id,name,email,department_id,slot_id,current_semester,created_at,user_id,temp_password,must_change_password,password_generated_at")
+      .select("id,name,email,department_id,slot_id,class_id,section_id,roll_number,term,status,current_semester,created_at,user_id,temp_password,must_change_password,password_generated_at", { count: "exact" })
       .eq("college_id", ctx.collegeId)
+      .eq("institution_id", ctx.collegeId)
       .order("created_at", { ascending: false });
+
+    if (isSchool) {
+      if (query.classId) studentQuery = studentQuery.eq("class_id", query.classId);
+      if (query.sectionId) studentQuery = studentQuery.eq("section_id", query.sectionId);
+      if (query.status !== "all") studentQuery = studentQuery.eq("status", query.status);
+    }
+
+    if (searchText) {
+      const escaped = searchText.replace(/[%_]/g, "");
+      studentQuery = studentQuery.or(`name.ilike.%${escaped}%,roll_number.ilike.%${escaped}%`);
+    }
+
+    const { data, error, count } = await studentQuery.range(offset, offset + query.limit - 1);
 
     if (error) {
       const message = error.message.toLowerCase();
@@ -269,26 +331,53 @@ export async function GET() {
         return apiError(error.message, 500);
       }
 
-      const { data: fallbackData, error: fallbackError } = await supabase
+      let fallbackQuery = supabase
         .from("students")
-        .select("id,name,email,department_id,slot_id,created_at,user_id")
+        .select("id,name,email,department_id,slot_id,class_id,section_id,roll_number,term,created_at,user_id", { count: "exact" })
         .eq("college_id", ctx.collegeId)
+        .eq("institution_id", ctx.collegeId)
         .order("created_at", { ascending: false });
+
+      if (isSchool) {
+        if (query.classId) fallbackQuery = fallbackQuery.eq("class_id", query.classId);
+        if (query.sectionId) fallbackQuery = fallbackQuery.eq("section_id", query.sectionId);
+      }
+
+      if (searchText) {
+        const escaped = searchText.replace(/[%_]/g, "");
+        fallbackQuery = fallbackQuery.or(`name.ilike.%${escaped}%,roll_number.ilike.%${escaped}%`);
+      }
+
+      const { data: fallbackData, error: fallbackError, count: fallbackCount } = await fallbackQuery.range(offset, offset + query.limit - 1);
 
       if (fallbackError) return apiError(fallbackError.message, 500);
 
       return apiSuccess(
-        (fallbackData ?? []).map((row) => ({
-          ...row,
-          current_semester: null,
-          temp_password: null,
-          must_change_password: false,
-          password_generated_at: null,
-        })),
+        {
+          rows: (fallbackData ?? []).map((row) => ({
+            ...row,
+            status: "active",
+            current_semester: null,
+            temp_password: null,
+            must_change_password: false,
+            password_generated_at: null,
+          })),
+          page: query.page,
+          limit: query.limit,
+          total: Number(fallbackCount ?? 0),
+          totalPages: Math.max(Math.ceil(Number(fallbackCount ?? 0) / query.limit), 1),
+        },
       );
     }
-    return apiSuccess(data ?? []);
+    return apiSuccess({
+      rows: data ?? [],
+      page: query.page,
+      limit: query.limit,
+      total: Number(count ?? 0),
+      totalPages: Math.max(Math.ceil(Number(count ?? 0) / query.limit), 1),
+    });
   } catch (error) {
+    if (error instanceof z.ZodError) return apiError("Invalid query", 400, error.flatten());
     return apiError("Unable to load students", 500, String(error));
   }
 }
@@ -298,11 +387,82 @@ export async function PATCH(request: Request) {
     const ctx = await getRequestContext();
     if (!ensureRole(ctx.role, ["Admin", "HOD"])) return apiError("Forbidden", 403);
     if (!ctx.collegeId) return apiError("Missing college context", 400);
+    const isSchool = await isSchoolInstitution(ctx.collegeId);
 
     const body = patchSchema.parse(await request.json());
     const supabase = getSupabaseAdmin();
 
     if (body.action === "bulkUpgradeSemester") {
+      if (isSchool) {
+        if (!body.fromClassId || !body.targetClassId) {
+          return apiError("fromClassId and targetClassId are required for school class promotion", 400);
+        }
+
+        const { data: candidates, error: candidatesError } = await supabase
+          .from("students")
+          .select("id,name,class_id,section_id")
+          .eq("college_id", ctx.collegeId)
+          .eq("class_id", body.fromClassId)
+          .order("name", { ascending: true });
+
+        if (candidatesError) {
+          if (isMissingSchoolColumnsError(candidatesError.message)) {
+            return apiError("School promotion columns are missing. Run institution_unified_migration.sql", 400);
+          }
+          return apiError(candidatesError.message, 500);
+        }
+
+        const studentsToPromote = candidates ?? [];
+        if (studentsToPromote.length === 0) {
+          return apiError("No students found for selected class", 400);
+        }
+
+        const results: Array<{ studentId: string; name: string; upgraded: boolean; message: string }> = [];
+        let upgradedCount = 0;
+
+        for (const candidate of studentsToPromote) {
+          const nextSectionId = body.targetSectionId ?? (candidate.section_id as string | null) ?? null;
+          const { error: updateStudentError } = await supabase
+            .from("students")
+            .update({
+              class_id: body.targetClassId,
+              section_id: nextSectionId,
+              term: body.targetTerm ?? null,
+            })
+            .eq("id", candidate.id)
+            .eq("college_id", ctx.collegeId);
+
+          if (updateStudentError) {
+            results.push({
+              studentId: candidate.id as string,
+              name: candidate.name as string,
+              upgraded: false,
+              message: updateStudentError.message,
+            });
+            continue;
+          }
+
+          upgradedCount += 1;
+          results.push({
+            studentId: candidate.id as string,
+            name: candidate.name as string,
+            upgraded: true,
+            message: "Promoted",
+          });
+        }
+
+        return apiSuccess({
+          fromClassId: body.fromClassId,
+          targetClassId: body.targetClassId,
+          targetSectionId: body.targetSectionId ?? null,
+          targetTerm: body.targetTerm ?? null,
+          totalCandidates: studentsToPromote.length,
+          upgradedCount,
+          skippedCount: studentsToPromote.length - upgradedCount,
+          results,
+        });
+      }
+
       if (!body.slotId) return apiError("slotId is required for bulk upgrade", 400);
 
       const fromSemester = body.fromSemester ?? 1;
@@ -413,7 +573,22 @@ export async function PATCH(request: Request) {
 
     const action = body.action ?? (body.targetSemester ? "upgradeSemester" : "regeneratePassword");
 
+    if (action === "deactivate") {
+      const { error: deactivateError } = await supabase
+        .from("students")
+        .update({ status: "inactive" })
+        .eq("id", student.id)
+        .eq("college_id", ctx.collegeId);
+
+      if (deactivateError) return apiError(deactivateError.message, 500);
+      return apiSuccess({ studentId: student.id, status: "inactive" });
+    }
+
     if (action === "upgradeSemester") {
+      if (isSchool) {
+        return apiError("Use class promotion flow for school mode", 400);
+      }
+
       const currentSemester = Number(student.current_semester ?? 1);
       const targetSemester = body.targetSemester ?? currentSemester + 1;
 
