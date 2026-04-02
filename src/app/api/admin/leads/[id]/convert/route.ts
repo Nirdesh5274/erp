@@ -53,6 +53,11 @@ function normalizePhone(phone: string) {
   return phone.replace(/\s+/g, "").trim();
 }
 
+function isMissingStudentStatusColumnError(message: string) {
+  const text = message.toLowerCase();
+  return text.includes("status") && text.includes("students") && (text.includes("column") || text.includes("schema cache"));
+}
+
 async function isSchoolInstitution(collegeId: string) {
   const supabase = getSupabaseAdmin();
   const { data, error } = await supabase
@@ -155,7 +160,6 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     let createdAdmissionId: string | null = null;
     let createdStudentId: string | null = null;
     let createdStudentFeeId: string | null = null;
-    let createdLegacyFeeId: string | null = null;
     let createdUserId: string | null = null;
 
     const warnings: string[] = [];
@@ -185,25 +189,41 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       if (admissionError || !admissionRow?.id) throw new Error(admissionError?.message ?? "Failed to create admission");
       createdAdmissionId = admissionRow.id;
 
-      const { data: studentRow, error: studentError } = await supabase
+      const studentInsertPayload = {
+        college_id: ctx.collegeId,
+        institution_id: ctx.collegeId,
+        department_id: null,
+        slot_id: null,
+        admission_id: admissionRow.id,
+        name: lead.name,
+        email,
+        current_semester: 1,
+        class_id: body.class_id,
+        section_id: body.section_id,
+        term: body.term,
+        roll_number: rollNumber,
+        status: "active",
+      };
+
+      let { data: studentRow, error: studentError } = await supabase
         .from("students")
-        .insert({
-          college_id: ctx.collegeId,
-          institution_id: ctx.collegeId,
-          department_id: null,
-          slot_id: null,
-          admission_id: admissionRow.id,
-          name: lead.name,
-          email,
-          current_semester: 1,
-          class_id: body.class_id,
-          section_id: body.section_id,
-          term: body.term,
-          roll_number: rollNumber,
-          status: "active",
-        })
+        .insert(studentInsertPayload)
         .select("id")
         .single();
+
+      if (studentError && isMissingStudentStatusColumnError(studentError.message)) {
+        const fallbackStudentPayload: Record<string, unknown> = { ...studentInsertPayload };
+        delete fallbackStudentPayload.status;
+        const retry = await supabase
+          .from("students")
+          .insert(fallbackStudentPayload)
+          .select("id")
+          .single();
+
+        studentRow = retry.data;
+        studentError = retry.error;
+        warnings.push("students.status column missing: inserted student without status field");
+      }
 
       if (studentError || !studentRow?.id) throw new Error(studentError?.message ?? "Failed to create student");
       createdStudentId = studentRow.id;
@@ -301,24 +321,8 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
         await recalcStudentFeeTotals(supabase, fallbackStudentFee.id);
       }
 
-      if (body.admission_fee > 0) {
-        const { data: feeRow, error: feeError } = await supabase
-          .from("fees")
-          .insert({
-            college_id: ctx.collegeId,
-            admission_id: admissionRow.id,
-            student_id: studentRow.id,
-            amount: body.admission_fee,
-            paid_amount: 0,
-            due_amount: body.admission_fee,
-            status: "Pending",
-          })
-          .select("id")
-          .single();
-
-        if (feeError || !feeRow?.id) throw new Error(feeError?.message ?? "Failed to create legacy fee");
-        createdLegacyFeeId = feeRow.id;
-      }
+      // In school conversion, dues are tracked via student_fees/student_fee_items.
+      // Avoid writing duplicate legacy admission fee rows into fees.
 
       const { error: seatsError } = await supabase
         .from("sections")
@@ -414,11 +418,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
         login_password: tempPassword,
         warnings,
       });
-    } catch {
-      if (createdLegacyFeeId) {
-        await supabase.from("fees").delete().eq("id", createdLegacyFeeId).eq("college_id", ctx.collegeId);
-      }
-
+    } catch (conversionError) {
       if (createdStudentFeeId) {
         await supabase.from("student_fees").delete().eq("id", createdStudentFeeId).eq("college_id", ctx.collegeId);
       }
@@ -435,8 +435,9 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
         await supabase.from("users").delete().eq("id", createdUserId).eq("college_id", ctx.collegeId);
       }
 
+      const errorMessage = conversionError instanceof Error ? conversionError.message : "Rolled back";
       return NextResponse.json(
-        { error: "CONVERSION_FAILED", message: "Rolled back" },
+        { error: "CONVERSION_FAILED", message: errorMessage },
         { status: 500 },
       );
     }

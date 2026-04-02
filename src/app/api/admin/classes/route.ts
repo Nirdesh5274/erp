@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { apiError, apiSuccess } from "@/lib/api";
-import { ensureRole, getRequestContext } from "@/lib/requestContext";
+import { ensureRole, getInstitutionContext, getRequestContext } from "@/lib/requestContext";
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 
 const schema = z.object({
@@ -8,25 +8,11 @@ const schema = z.object({
   metadata: z.record(z.string(), z.unknown()).optional(),
 });
 
-async function getInstitutionType(collegeId: string) {
-  const supabase = getSupabaseAdmin();
-  const { data, error } = await supabase
-    .from("colleges")
-    .select("type")
-    .eq("id", collegeId)
-    .maybeSingle();
-
-  if (error) throw new Error(error.message);
-  return data?.type === "school" ? "school" : "college";
-}
-
 export async function GET() {
   try {
     const ctx = await getRequestContext();
     if (!ensureRole(ctx.role, ["Admin", "HOD", "Faculty"])) return apiError("Forbidden", 403);
-    const institutionId = ctx.collegeId;
-    if (!institutionId) return apiError("Missing institution context", 400);
-    const institutionType = await getInstitutionType(institutionId);
+    const { institutionId, institutionType } = await getInstitutionContext(ctx);
 
     const supabase = getSupabaseAdmin();
     const { data, error } = await supabase
@@ -56,9 +42,7 @@ export async function POST(request: Request) {
   try {
     const ctx = await getRequestContext();
     if (!ensureRole(ctx.role, ["Admin"])) return apiError("Forbidden", 403);
-    const institutionId = ctx.collegeId;
-    if (!institutionId) return apiError("Missing institution context", 400);
-    const institutionType = await getInstitutionType(institutionId);
+    const { institutionId, institutionType } = await getInstitutionContext(ctx);
 
     const body = schema.parse(await request.json());
     const normalizedName = body.name.trim();

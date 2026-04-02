@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   AlertTriangle,
   CalendarDays,
@@ -8,16 +8,16 @@ import {
   Download,
   IndianRupee,
   Search,
-  UserRound,
   Wallet,
 } from "lucide-react";
 import toast from "react-hot-toast";
 import { PageSkeleton } from "@/components/ui/skeletons";
 import { apiFetch } from "@/lib/clientApi";
+import { useInstitutionType } from "@/hooks/useInstitutionType";
 
-interface SlotRow {
+interface TargetRow {
   id: string;
-  course: string;
+  name: string;
 }
 
 interface SlotStudentSummary {
@@ -76,7 +76,7 @@ interface ReceiptRow {
 }
 
 interface SlotFeesResponse {
-  slot: { id: string; course: string };
+  target: { id: string; name: string; kind: "slot" | "class" };
   students: SlotStudentSummary[];
 }
 
@@ -211,11 +211,12 @@ function SummaryCards({
 }
 
 export default function AdminFeesPage() {
+  const { isSchool } = useInstitutionType();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
-  const [slots, setSlots] = useState<SlotRow[]>([]);
-  const [selectedSlotId, setSelectedSlotId] = useState("");
+  const [targets, setTargets] = useState<TargetRow[]>([]);
+  const [selectedTargetId, setSelectedTargetId] = useState("");
   const [selectedStudentId, setSelectedStudentId] = useState("");
   const [searchTerm, setSearchTerm] = useState("");
   const [dateFilter, setDateFilter] = useState("");
@@ -235,35 +236,46 @@ export default function AdminFeesPage() {
   const [adjustTypeByFee, setAdjustTypeByFee] = useState<Record<string, "discount" | "fine" | "extra">>({});
   const [adjustAmountByFee, setAdjustAmountByFee] = useState<Record<string, number>>({});
 
-  const loadSlots = async () => {
-    const data = await apiFetch<SlotRow[]>("/api/admin/slots");
-    setSlots(data);
-    if (!selectedSlotId && data.length > 0) setSelectedSlotId(data[0].id);
-  };
+  const loadTargets = useCallback(async () => {
+    if (isSchool) {
+      const classRows = await apiFetch<Array<{ id: string; name: string }>>("/api/admin/classes");
+      const classTargets = classRows.map((row) => ({ id: row.id, name: row.name }));
+      setTargets(classTargets);
+      if (!selectedTargetId && classTargets.length > 0) setSelectedTargetId(classTargets[0].id);
+      return;
+    }
 
-  const loadSlotStudents = async (slotId: string) => {
-    if (!slotId) return setSlotStudents([]);
-    const data = await apiFetch<SlotFeesResponse>(`/api/admin/student-fees?slotId=${slotId}`);
+    const slotRows = await apiFetch<Array<{ id: string; course: string }>>("/api/admin/slots");
+    const slotTargets = slotRows.map((row) => ({ id: row.id, name: row.course }));
+    setTargets(slotTargets);
+    if (!selectedTargetId && slotTargets.length > 0) setSelectedTargetId(slotTargets[0].id);
+  }, [isSchool, selectedTargetId]);
+
+  const loadTargetStudents = useCallback(async (targetId: string) => {
+    if (!targetId) return setSlotStudents([]);
+    const query = isSchool ? `classId=${targetId}` : `slotId=${targetId}`;
+    const data = await apiFetch<SlotFeesResponse>(`/api/admin/student-fees?${query}`);
     setSlotStudents(data.students);
-  };
+  }, [isSchool]);
 
-  const loadStudentDetails = async (slotId: string, studentId: string) => {
-    if (!slotId || !studentId) return setStudentDetails(null);
-    const data = await apiFetch<StudentFeesResponse>(`/api/admin/student-fees?slotId=${slotId}&studentId=${studentId}`);
+  const loadStudentDetails = useCallback(async (targetId: string, studentId: string) => {
+    if (!targetId || !studentId) return setStudentDetails(null);
+    const query = isSchool ? `classId=${targetId}&studentId=${studentId}` : `slotId=${targetId}&studentId=${studentId}`;
+    const data = await apiFetch<StudentFeesResponse>(`/api/admin/student-fees?${query}`);
     setStudentDetails(data);
-  };
+  }, [isSchool]);
 
-  const loadReportsSummary = async () => {
+  const loadReportsSummary = useCallback(async () => {
     const data = await apiFetch<ReportsSummary>("/api/admin/reports");
     setReportsSummary(data);
-  };
+  }, []);
 
   useEffect(() => {
     const boot = async () => {
       setLoading(true);
       setError("");
       try {
-        await Promise.all([loadSlots(), loadReportsSummary()]);
+        await Promise.all([loadTargets(), loadReportsSummary()]);
       } catch (e) {
         setError(e instanceof Error ? e.message : "Unable to load fee dashboard");
       } finally {
@@ -271,20 +283,20 @@ export default function AdminFeesPage() {
       }
     };
     void boot();
-  }, []);
+  }, [loadTargets, loadReportsSummary]);
 
   useEffect(() => {
     const run = async () => {
-      if (!selectedSlotId) return;
+      if (!selectedTargetId) return;
       setError("");
       try {
-        await loadSlotStudents(selectedSlotId);
+        await loadTargetStudents(selectedTargetId);
       } catch (e) {
         setError(e instanceof Error ? e.message : "Unable to load students");
       }
     };
     void run();
-  }, [selectedSlotId]);
+  }, [selectedTargetId, loadTargetStudents]);
 
   const studentsForUI = slotStudents;
 
@@ -296,17 +308,17 @@ export default function AdminFeesPage() {
 
   useEffect(() => {
     const run = async () => {
-      if (!selectedSlotId || !selectedStudentId) return;
+      if (!selectedTargetId || !selectedStudentId) return;
       if (!slotStudents.some((student) => student.id === selectedStudentId)) return;
       setError("");
       try {
-        await loadStudentDetails(selectedSlotId, selectedStudentId);
+        await loadStudentDetails(selectedTargetId, selectedStudentId);
       } catch (e) {
         setError(e instanceof Error ? e.message : "Unable to load student details");
       }
     };
     void run();
-  }, [selectedSlotId, selectedStudentId, slotStudents]);
+  }, [selectedTargetId, selectedStudentId, slotStudents, loadStudentDetails]);
 
   const feeItemsByFeeId = useMemo(() => {
     const map = new Map<string, StudentFeeItem[]>();
@@ -336,8 +348,8 @@ export default function AdminFeesPage() {
     return map;
   }, [studentDetails?.receipts]);
 
-  const feesForUI = studentDetails?.fees ?? [];
-  const legacyFeesForUI = studentDetails?.legacyFees ?? [];
+  const feesForUI = useMemo(() => studentDetails?.fees ?? [], [studentDetails?.fees]);
+  const legacyFeesForUI = useMemo(() => studentDetails?.legacyFees ?? [], [studentDetails?.legacyFees]);
   const itemsForUI = feeItemsByFeeId;
   const paymentsForUI = paymentsByFeeId;
   const receiptMapForUI = receiptByPaymentId;
@@ -471,12 +483,12 @@ export default function AdminFeesPage() {
   }, [feesForUI, paymentsForUI, receiptMapForUI, dateFilter]);
 
   const refreshActiveViews = async () => {
-    if (!selectedSlotId) return;
+    if (!selectedTargetId) return;
     await Promise.all([
-      loadSlotStudents(selectedSlotId),
+      loadTargetStudents(selectedTargetId),
       loadReportsSummary(),
       selectedStudentId && slotStudents.some((student) => student.id === selectedStudentId)
-        ? loadStudentDetails(selectedSlotId, selectedStudentId)
+        ? loadStudentDetails(selectedTargetId, selectedStudentId)
         : Promise.resolve(),
     ]);
   };
@@ -566,7 +578,7 @@ export default function AdminFeesPage() {
     window.open(`/api/fees/receipt/${receiptId}`, "_blank", "noopener,noreferrer");
   };
 
-  if (loading && slots.length === 0 && !error) {
+  if (loading && targets.length === 0 && !error) {
     return <PageSkeleton />;
   }
 
@@ -600,19 +612,19 @@ export default function AdminFeesPage() {
       <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
         <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
           <label className="text-xs text-slate-600">
-            Slot / Class
+            {isSchool ? "Class" : "Slot"}
             <select
-              value={selectedSlotId}
+              value={selectedTargetId}
               onChange={(event) => {
-                setSelectedSlotId(event.target.value);
+                setSelectedTargetId(event.target.value);
                 setSelectedStudentId("");
                 setStudentDetails(null);
               }}
               className="mt-1 h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm text-slate-800 outline-none transition focus:border-slate-400"
             >
-              <option value="">Select slot</option>
-              {slots.map((slot) => (
-                <option key={slot.id} value={slot.id}>{slot.course}</option>
+              <option value="">{isSchool ? "Select class" : "Select slot"}</option>
+              {targets.map((target) => (
+                <option key={target.id} value={target.id}>{target.name}</option>
               ))}
             </select>
           </label>

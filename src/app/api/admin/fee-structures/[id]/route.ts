@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { apiError, apiSuccess } from "@/lib/api";
-import { ensureRole, getRequestContext } from "@/lib/requestContext";
+import { ensureRole, getInstitutionContext, getRequestContext } from "@/lib/requestContext";
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 
 const componentSchema = z.object({
@@ -14,6 +14,8 @@ const patchSchema = z.object({
   name: z.string().min(1).optional(),
   description: z.string().trim().max(400).optional(),
   semester: z.number().int().min(1).max(12).optional(),
+  classId: z.string().uuid().optional(),
+  term: z.string().trim().min(1).max(20).optional(),
   academicYear: z.string().min(1).optional(),
   isActive: z.boolean().optional(),
   components: z.array(componentSchema).optional(),
@@ -38,6 +40,16 @@ function isMissingSemesterColumn(message: string | undefined) {
   return msg.includes("semester") && (msg.includes("column") || msg.includes("schema cache"));
 }
 
+function isMissingClassIdColumn(message: string | undefined) {
+  const msg = (message ?? "").toLowerCase();
+  return msg.includes("class_id") && (msg.includes("column") || msg.includes("schema cache"));
+}
+
+function isMissingTermColumn(message: string | undefined) {
+  const msg = (message ?? "").toLowerCase();
+  return msg.includes("term") && (msg.includes("column") || msg.includes("schema cache"));
+}
+
 export async function PATCH(
   request: Request,
   { params }: { params: Promise<{ id: string }> },
@@ -45,7 +57,7 @@ export async function PATCH(
   try {
     const ctx = await getRequestContext();
     if (!ensureRole(ctx.role, ["Admin"])) return apiError("Forbidden", 403);
-    if (!ctx.collegeId) return apiError("Missing college context", 400);
+    const institution = await getInstitutionContext(ctx);
 
     const body = patchSchema.parse(await request.json());
     const { id } = await params;
@@ -58,6 +70,8 @@ export async function PATCH(
     if (body.name !== undefined) updatePayload.name = body.name;
     if (body.description !== undefined) updatePayload.description = body.description;
     if (body.semester !== undefined) updatePayload.semester = body.semester;
+    if (body.classId !== undefined) updatePayload.class_id = body.classId;
+    if (body.term !== undefined) updatePayload.term = body.term;
     if (body.academicYear !== undefined) updatePayload.academic_year = body.academicYear;
     if (body.isActive !== undefined) updatePayload.is_active = body.isActive;
 
@@ -65,8 +79,8 @@ export async function PATCH(
       .from("fee_structures")
       .update(updatePayload)
       .eq("id", id)
-      .eq("college_id", ctx.collegeId)
-      .select("id,slot_id,semester,name,academic_year,is_active,created_at,updated_at")
+      .eq("college_id", institution.institutionId)
+      .select("id,slot_id,semester,class_id,term,name,academic_year,is_active,created_at,updated_at")
       .single();
 
     if (structureError && isMissingSemesterColumn(structureError.message)) {
@@ -80,11 +94,15 @@ export async function PATCH(
         .from("fee_structures")
         .update(fallbackPayload)
         .eq("id", id)
-        .eq("college_id", ctx.collegeId)
-        .select("id,slot_id,semester,name,academic_year,is_active,created_at,updated_at")
+        .eq("college_id", institution.institutionId)
+        .select("id,slot_id,semester,class_id,term,name,academic_year,is_active,created_at,updated_at")
         .single();
       structure = fallback.data;
       structureError = fallback.error;
+    }
+
+    if (structureError && (isMissingClassIdColumn(structureError.message) || isMissingTermColumn(structureError.message))) {
+      return apiError("School class/term fields are missing in DB. Run latest migration.", 400);
     }
 
     if (structureError || !structure) return apiError(structureError?.message ?? "Unable to update fee structure", 500);
@@ -94,12 +112,12 @@ export async function PATCH(
         .from("fee_components")
         .delete()
         .eq("fee_structure_id", id)
-        .eq("college_id", ctx.collegeId);
+        .eq("college_id", institution.institutionId);
       if (removeError) return apiError(removeError.message, 500);
 
       const payload = body.components.map((component, index) => ({
         fee_structure_id: id,
-        college_id: ctx.collegeId,
+        college_id: institution.institutionId,
         component_key: component.componentKey ? toKey(component.componentKey) : toKey(component.componentName),
         component_name: component.componentName,
         default_amount: component.amount,
@@ -122,6 +140,8 @@ export async function PATCH(
       id: structure.id,
       slotId: structure.slot_id,
       semester: structure.semester,
+      classId: structure.class_id,
+      term: structure.term,
       name: structure.name,
       academicYear: structure.academic_year,
       isActive: structure.is_active,
@@ -148,7 +168,7 @@ export async function DELETE(
   try {
     const ctx = await getRequestContext();
     if (!ensureRole(ctx.role, ["Admin"])) return apiError("Forbidden", 403);
-    if (!ctx.collegeId) return apiError("Missing college context", 400);
+    const institution = await getInstitutionContext(ctx);
 
     const { id } = await params;
     const supabase = getSupabaseAdmin();
@@ -157,7 +177,7 @@ export async function DELETE(
       .from("fee_structures")
       .delete()
       .eq("id", id)
-      .eq("college_id", ctx.collegeId);
+      .eq("college_id", institution.institutionId);
 
     if (error) return apiError(error.message, 500);
     return apiSuccess({ deleted: true });

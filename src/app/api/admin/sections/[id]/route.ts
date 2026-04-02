@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { apiError, apiSuccess } from "@/lib/api";
-import { ensureRole, getRequestContext } from "@/lib/requestContext";
+import { ensureRole, getInstitutionContext, getRequestContext } from "@/lib/requestContext";
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 
 const schema = z.object({
@@ -18,8 +18,7 @@ export async function PUT(request: Request, { params }: { params: Promise<{ id: 
     const { id } = await params;
     const ctx = await getRequestContext();
     if (!ensureRole(ctx.role, ["Admin"])) return apiError("Forbidden", 403);
-    const institutionId = ctx.collegeId;
-    if (!institutionId) return apiError("Missing institution context", 400);
+    const { institutionId } = await getInstitutionContext(ctx);
 
     const body = schema.parse(await request.json());
     const updatePayload: Record<string, unknown> = {};

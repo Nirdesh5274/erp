@@ -7,6 +7,7 @@ export interface AuthUser {
   role: Role;
   collegeId: string | null;
   departmentId: string | null;
+  institutionType?: "college" | "school";
 }
 
 export interface AuthSession {

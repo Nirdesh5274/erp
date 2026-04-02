@@ -44,7 +44,7 @@ function isMissingSemesterColumnError(message: string) {
 function isMissingSchoolColumnsError(message: string) {
   const text = message.toLowerCase();
   return (
-    (text.includes("class_id") || text.includes("section_id") || text.includes("term"))
+    (text.includes("class_id") || text.includes("section_id") || text.includes("term") || text.includes("status"))
     && (text.includes("column") || text.includes("schema cache"))
   );
 }
@@ -327,7 +327,13 @@ export async function GET(request: Request) {
 
     if (error) {
       const message = error.message.toLowerCase();
-      if (!message.includes("temp_password") && !message.includes("must_change_password") && !message.includes("password_generated_at") && !isMissingCurrentSemesterColumnError(error.message)) {
+      if (
+        !message.includes("temp_password")
+        && !message.includes("must_change_password")
+        && !message.includes("password_generated_at")
+        && !message.includes("status")
+        && !isMissingCurrentSemesterColumnError(error.message)
+      ) {
         return apiError(error.message, 500);
       }
 
@@ -341,6 +347,7 @@ export async function GET(request: Request) {
       if (isSchool) {
         if (query.classId) fallbackQuery = fallbackQuery.eq("class_id", query.classId);
         if (query.sectionId) fallbackQuery = fallbackQuery.eq("section_id", query.sectionId);
+        // Skip status filter in fallback mode when status column is unavailable.
       }
 
       if (searchText) {

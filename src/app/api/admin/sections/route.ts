@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { apiError, apiSuccess } from "@/lib/api";
-import { ensureRole, getRequestContext } from "@/lib/requestContext";
+import { ensureRole, getInstitutionContext, getRequestContext } from "@/lib/requestContext";
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 import { sectionCreateSchema } from "@/lib/validators/institution";
 
@@ -8,8 +8,7 @@ export async function GET(request: Request) {
   try {
     const ctx = await getRequestContext();
     if (!ensureRole(ctx.role, ["Admin", "HOD", "Faculty"])) return apiError("Forbidden", 403);
-    const institutionId = ctx.collegeId;
-    if (!institutionId) return apiError("Missing institution context", 400);
+    const { institutionId } = await getInstitutionContext(ctx);
 
     const { searchParams } = new URL(request.url);
     const classId = searchParams.get("classId") ?? searchParams.get("class_id");
@@ -50,8 +49,7 @@ export async function POST(request: Request) {
   try {
     const ctx = await getRequestContext();
     if (!ensureRole(ctx.role, ["Admin"])) return apiError("Forbidden", 403);
-    const institutionId = ctx.collegeId;
-    if (!institutionId) return apiError("Missing institution context", 400);
+    const { institutionId } = await getInstitutionContext(ctx);
 
     const body = sectionCreateSchema.parse(await request.json());
 

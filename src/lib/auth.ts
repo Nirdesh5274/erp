@@ -15,6 +15,7 @@ export interface JwtPayload {
   role: Role;
   collegeId: string | null;
   departmentId: string | null;
+  institutionType?: "college" | "school";
   name: string;
   email: string;
 }
@@ -27,6 +28,7 @@ export async function signAccessToken(user: AuthUser) {
     role: user.role,
     collegeId: user.collegeId,
     departmentId: user.departmentId,
+    institutionType: user.institutionType,
     name: user.name,
     email: user.email,
   })
@@ -44,6 +46,7 @@ export async function signRefreshToken(user: AuthUser) {
     role: user.role,
     collegeId: user.collegeId,
     departmentId: user.departmentId,
+    institutionType: user.institutionType,
     name: user.name,
     email: user.email,
   })

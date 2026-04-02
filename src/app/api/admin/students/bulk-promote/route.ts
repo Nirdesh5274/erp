@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { apiError, apiSuccess } from "@/lib/api";
-import { ensureRole, getRequestContext } from "@/lib/requestContext";
+import { ensureRole, getInstitutionContext, getRequestContext } from "@/lib/requestContext";
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 
 const schema = z.object({
@@ -78,24 +78,13 @@ async function generateRollNumberForSection(params: {
   return `${section.name}${String(Number(count ?? 0) + 1).padStart(3, "0")}`;
 }
 
-async function isSchoolInstitution(collegeId: string) {
-  const supabase = getSupabaseAdmin();
-  const { data, error } = await supabase
-    .from("colleges")
-    .select("type")
-    .eq("id", collegeId)
-    .maybeSingle();
-
-  if (error) throw new Error(error.message);
-  return data?.type === "school";
-}
-
 export async function POST(request: Request) {
   try {
     const ctx = await getRequestContext();
     if (!ensureRole(ctx.role, ["Admin", "HOD"])) return apiError("Forbidden", 403);
-    if (!ctx.collegeId) return apiError("Missing college context", 400);
-    const isSchool = await isSchoolInstitution(ctx.collegeId);
+    const institution = await getInstitutionContext(ctx);
+    const institutionId = institution.institutionId;
+    const isSchool = institution.institutionType === "school";
 
     const body = schema.parse(await request.json());
     const supabase = getSupabaseAdmin();
@@ -132,12 +121,12 @@ export async function POST(request: Request) {
           supabase
             .from("fees")
             .select("id,amount,paid_amount,due_amount,status")
-            .eq("college_id", ctx.collegeId)
+            .eq("college_id", institutionId)
             .eq("student_id", candidate.id),
           supabase
             .from("student_fees")
             .select("id,grand_total,paid_total,due_total,status")
-            .eq("college_id", ctx.collegeId)
+            .eq("college_id", institutionId)
             .eq("student_id", candidate.id),
         ]);
 
@@ -174,14 +163,14 @@ export async function POST(request: Request) {
             .from("sections")
             .select("name")
             .eq("id", candidate.section_id)
-            .eq("institution_id", ctx.collegeId)
+            .eq("institution_id", institutionId)
             .maybeSingle();
 
           if (!currentSectionError && currentSection?.name) {
             const { data: sameNamedTargetSection } = await supabase
               .from("sections")
               .select("id")
-              .eq("institution_id", ctx.collegeId)
+              .eq("institution_id", institutionId)
               .eq("class_id", body.targetClassId)
               .eq("name", currentSection.name)
               .maybeSingle();
@@ -196,7 +185,7 @@ export async function POST(request: Request) {
             nextRollNumber = await generateRollNumberForSection({
               supabase,
               sectionId: nextSectionId,
-              institutionId: ctx.collegeId,
+              institutionId,
             });
           } catch (rollError) {
             results.push({
@@ -218,7 +207,7 @@ export async function POST(request: Request) {
             roll_number: nextRollNumber,
           })
           .eq("id", candidate.id)
-          .eq("college_id", ctx.collegeId);
+          .eq("college_id", institutionId);
 
         if (updateStudentError) {
           results.push({
@@ -263,7 +252,7 @@ export async function POST(request: Request) {
     const { data: candidates, error: candidatesError } = await supabase
       .from("students")
       .select("id,name,current_semester")
-      .eq("college_id", ctx.collegeId)
+      .eq("college_id", institutionId)
       .eq("slot_id", body.slotId)
       .eq("current_semester", fromSemester)
       .order("name", { ascending: true });
@@ -288,7 +277,7 @@ export async function POST(request: Request) {
         .from("students")
         .update({ current_semester: targetSemester })
         .eq("id", candidate.id)
-        .eq("college_id", ctx.collegeId);
+        .eq("college_id", institutionId);
 
       if (updateStudentError) {
         results.push({

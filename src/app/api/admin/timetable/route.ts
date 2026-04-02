@@ -1,29 +1,103 @@
 import { z } from "zod";
 import { apiError, apiSuccess } from "@/lib/api";
-import { ensureRole, getRequestContext } from "@/lib/requestContext";
+import { ensureRole, getInstitutionContext, getRequestContext } from "@/lib/requestContext";
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 import { timetableCreateSchema } from "@/lib/validators/institution";
 
-async function isSchoolInstitution(collegeId: string) {
+function parseTimeToMinutes(value: string | null | undefined) {
+  if (!value) return null;
+  const parts = value.split(":");
+  if (parts.length < 2) return null;
+  const hours = Number(parts[0]);
+  const minutes = Number(parts[1]);
+  if (!Number.isFinite(hours) || !Number.isFinite(minutes)) return null;
+  return hours * 60 + minutes;
+}
+
+function hasTimeOverlap(
+  startA: string | null | undefined,
+  endA: string | null | undefined,
+  startB: string | null | undefined,
+  endB: string | null | undefined,
+) {
+  const aStart = parseTimeToMinutes(startA);
+  const aEnd = parseTimeToMinutes(endA);
+  const bStart = parseTimeToMinutes(startB);
+  const bEnd = parseTimeToMinutes(endB);
+  if (aStart === null || aEnd === null || bStart === null || bEnd === null) return null;
+  return aStart < bEnd && bStart < aEnd;
+}
+
+async function validateSchoolTimetableAssignment(params: {
+  institutionId: string;
+  sectionId: string;
+  subjectId: string | null;
+  teacherId: string;
+}) {
+  const { institutionId, sectionId, subjectId, teacherId } = params;
   const supabase = getSupabaseAdmin();
-  const { data, error } = await supabase
-    .from("colleges")
-    .select("type")
-    .eq("id", collegeId)
+
+  const { data: section, error: sectionError } = await supabase
+    .from("sections")
+    .select("id,class_id")
+    .eq("id", sectionId)
+    .eq("institution_id", institutionId)
     .maybeSingle();
 
-  if (error) throw new Error(error.message);
-  return data?.type === "school";
+  if (sectionError) throw new Error(sectionError.message);
+  if (!section) return { ok: false as const, status: 404, message: "Section not found" };
+
+  const { data: teacher, error: teacherError } = await supabase
+    .from("users")
+    .select("id,role,college_id")
+    .eq("id", teacherId)
+    .eq("college_id", institutionId)
+    .maybeSingle();
+
+  if (teacherError) throw new Error(teacherError.message);
+  if (!teacher) return { ok: false as const, status: 404, message: "Teacher not found" };
+  if ((teacher.role as string) !== "Faculty") {
+    return { ok: false as const, status: 400, message: "Only Faculty can be assigned in timetable" };
+  }
+
+  if (subjectId) {
+    const { data: subject, error: subjectError } = await supabase
+      .from("subjects")
+      .select("id,class_id,college_id,institution_id")
+      .eq("id", subjectId)
+      .eq("college_id", institutionId)
+      .maybeSingle();
+
+    if (subjectError) throw new Error(subjectError.message);
+    if (!subject) return { ok: false as const, status: 404, message: "Subject not found" };
+    if (subject.class_id && subject.class_id !== section.class_id) {
+      return { ok: false as const, status: 400, message: "Selected subject does not belong to this class" };
+    }
+
+    const { data: mapping, error: mappingError } = await supabase
+      .from("faculty_subjects")
+      .select("id")
+      .eq("faculty_id", teacherId)
+      .eq("subject_id", subjectId)
+      .maybeSingle();
+
+    if (mappingError) throw new Error(mappingError.message);
+    if (!mapping) {
+      return { ok: false as const, status: 400, message: "Selected teacher is not mapped to selected subject" };
+    }
+  }
+
+  return { ok: true as const };
 }
 
 export async function GET(request: Request) {
   try {
     const ctx = await getRequestContext();
     if (!ensureRole(ctx.role, ["Admin", "HOD", "Faculty"])) return apiError("Forbidden", 403);
-    const institutionId = ctx.collegeId;
-    if (!institutionId) return apiError("Missing institution context", 400);
+    const institution = await getInstitutionContext(ctx);
+    const institutionId = institution.institutionId;
 
-    if (!(await isSchoolInstitution(institutionId))) return apiSuccess([]);
+    if (institution.institutionType !== "school") return apiSuccess([]);
 
     const { searchParams } = new URL(request.url);
     const sectionId = searchParams.get("sectionId") ?? searchParams.get("section_id");
@@ -66,25 +140,23 @@ export async function POST(request: Request) {
   try {
     const ctx = await getRequestContext();
     if (!ensureRole(ctx.role, ["Admin"])) return apiError("Forbidden", 403);
-    const institutionId = ctx.collegeId;
-    if (!institutionId) return apiError("Missing institution context", 400);
+    const institution = await getInstitutionContext(ctx);
+    const institutionId = institution.institutionId;
 
-    if (!(await isSchoolInstitution(institutionId))) {
+    if (institution.institutionType !== "school") {
       return apiError("Timetable is available only for school mode", 400);
     }
 
     const body = timetableCreateSchema.parse(await request.json());
     const supabase = getSupabaseAdmin();
 
-    const { data: section, error: sectionError } = await supabase
-      .from("sections")
-      .select("id")
-      .eq("id", body.sectionId)
-      .eq("institution_id", institutionId)
-      .maybeSingle();
-
-    if (sectionError) return apiError(sectionError.message, 500);
-    if (!section) return apiError("Section not found", 404);
+    const validation = await validateSchoolTimetableAssignment({
+      institutionId,
+      sectionId: body.sectionId,
+      subjectId: body.subjectId ?? null,
+      teacherId: body.teacherId,
+    });
+    if (!validation.ok) return apiError(validation.message, validation.status);
 
     const { data: sectionConflict, error: sectionConflictError } = await supabase
       .from("timetable")
@@ -101,19 +173,25 @@ export async function POST(request: Request) {
       return apiError("Section already has a timetable entry for this day and period", 409);
     }
 
-    const { data: teacherConflict, error: teacherConflictError } = await supabase
+    const { data: teacherRows, error: teacherConflictError } = await supabase
       .from("timetable")
-      .select("id")
+      .select("id,period_number,start_time,end_time")
       .eq("institution_id", institutionId)
       .eq("day", body.day)
-      .eq("period_number", body.periodNumber)
       .eq("teacher_id", body.teacherId)
-      .limit(1)
-      .maybeSingle();
+      .limit(200);
 
     if (teacherConflictError) return apiError(teacherConflictError.message, 500);
+
+    const teacherConflict = (teacherRows ?? []).find((row) => {
+      const overlap = hasTimeOverlap(body.startTime ?? null, body.endTime ?? null, row.start_time, row.end_time);
+      if (overlap === true) return true;
+      if (overlap === false) return false;
+      return Number(row.period_number) === Number(body.periodNumber);
+    });
+
     if (teacherConflict) {
-      return apiError("Teacher already has another section in this day and period", 409);
+      return apiError("Teacher already has another section that overlaps in this day/period/time", 409);
     }
 
     if (body.roomId) {

@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { SectionCard } from "@/components/ui/SectionCard";
 import { useInstitutionType } from "@/hooks/useInstitutionType";
 import { apiFetch } from "@/lib/clientApi";
@@ -14,12 +14,21 @@ interface SectionRow {
 interface SubjectRow {
   id: string;
   name: string;
+  classId?: string | null;
 }
 
 interface UserRow {
   id: string;
   name: string;
   role: string;
+  class_id?: string | null;
+  className?: string | null;
+  subjectNames?: string[];
+}
+
+interface ClassRow {
+  id: string;
+  name: string;
 }
 
 interface TimetableRow {
@@ -33,12 +42,21 @@ interface TimetableRow {
   endTime: string | null;
 }
 
+interface PeriodDraft {
+  subjectId: string;
+  teacherId: string;
+  startTime: string;
+  endTime: string;
+  existingId: string | null;
+}
+
 const DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 const PERIODS = Array.from({ length: 8 }, (_, index) => index + 1);
 
 export default function AdminTimetablePage() {
   const { isSchool } = useInstitutionType();
 
+  const [classes, setClasses] = useState<ClassRow[]>([]);
   const [sections, setSections] = useState<SectionRow[]>([]);
   const [subjects, setSubjects] = useState<SubjectRow[]>([]);
   const [teachers, setTeachers] = useState<UserRow[]>([]);
@@ -46,69 +64,149 @@ export default function AdminTimetablePage() {
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
 
+  const [classId, setClassId] = useState("");
   const [sectionId, setSectionId] = useState("");
-  const [subjectId, setSubjectId] = useState("");
-  const [teacherId, setTeacherId] = useState("");
   const [day, setDay] = useState("Monday");
-  const [periodDrafts, setPeriodDrafts] = useState<
-    Record<number, { subjectId: string; teacherId: string; startTime: string; endTime: string; existingId: string | null }>
-  >({});
-  const [startTime, setStartTime] = useState("");
-  const [endTime, setEndTime] = useState("");
-
-  const sectionNameById = useMemo(() => new Map(sections.map((item) => [item.id, item.name])), [sections]);
+  const [periodDrafts, setPeriodDrafts] = useState<Record<number, PeriodDraft>>({});
+  const classNameById = useMemo(() => new Map(classes.map((item) => [item.id, item.name])), [classes]);
   const subjectNameById = useMemo(() => new Map(subjects.map((item) => [item.id, item.name])), [subjects]);
-  const teacherNameById = useMemo(() => new Map(teachers.map((item) => [item.id, item.name])), [teachers]);
 
-  const load = async () => {
-    setError("");
-    try {
-      const [sectionData, subjectData, userData, timetableData] = await Promise.all([
-        apiFetch<SectionRow[]>("/api/admin/sections"),
-        apiFetch<SubjectRow[]>("/api/admin/subjects"),
-        apiFetch<UserRow[]>("/api/admin/users?role=Faculty"),
-        apiFetch<TimetableRow[]>("/api/admin/timetable"),
-      ]);
-      setSections(sectionData);
-      setSubjects(subjectData);
-      setTeachers(userData);
-      setRows(timetableData);
-      setSectionId((prev) => prev || sectionData[0]?.id || "");
-      setTeacherId((prev) => prev || userData[0]?.id || "");
-    } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : "Unable to load timetable");
-    }
-  };
+  const classSections = useMemo(
+    () => sections.filter((section) => section.classId === classId),
+    [sections, classId],
+  );
 
-  useEffect(() => {
-    const activeRows = rows.filter((row) => row.sectionId === sectionId && row.day === day);
-    const nextDrafts: Record<number, { subjectId: string; teacherId: string; startTime: string; endTime: string; existingId: string | null }> = {};
+  const classSubjects = useMemo(
+    () => subjects.filter((subject) => !subject.classId || subject.classId === classId),
+    [subjects, classId],
+  );
+
+  const classSubjectNameSet = useMemo(
+    () => new Set(classSubjects.map((subject) => subject.name.toLowerCase())),
+    [classSubjects],
+  );
+
+  const classTeachers = useMemo(
+    () => teachers.filter((teacher) => {
+      if (teacher.class_id && teacher.class_id === classId) return true;
+      if (teacher.className && teacher.className === classNameById.get(classId)) return true;
+      const mappedSubjects = teacher.subjectNames ?? [];
+      return mappedSubjects.some((name) => classSubjectNameSet.has(name.toLowerCase()));
+    }),
+    [teachers, classId, classNameById, classSubjectNameSet],
+  );
+
+  const buildPeriodDrafts = useCallback((params: {
+    activeRows: TimetableRow[];
+    activeSectionId: string;
+    activeDay: string;
+    fallbackTeacherId?: string;
+  }) => {
+    const { activeRows, activeSectionId, activeDay, fallbackTeacherId } = params;
+    const scopedRows = activeRows.filter((row) => row.sectionId === activeSectionId && row.day === activeDay);
+    const nextDrafts: Record<number, PeriodDraft> = {};
 
     for (const period of PERIODS) {
-      const match = activeRows.find((row) => Number(row.periodNumber) === period) ?? null;
+      const match = scopedRows.find((row) => Number(row.periodNumber) === period) ?? null;
       nextDrafts[period] = {
         subjectId: match?.subjectId ?? "",
-        teacherId: match?.teacherId ?? teachers[0]?.id ?? "",
+        teacherId: match?.teacherId ?? fallbackTeacherId ?? "",
         startTime: match?.startTime ?? "",
         endTime: match?.endTime ?? "",
         existingId: match?.id ?? null,
       };
     }
 
-    setPeriodDrafts(nextDrafts);
-  }, [rows, sectionId, day, teachers]);
+    return nextDrafts;
+  }, []);
+
+  const load = useCallback(async () => {
+    setError("");
+    try {
+      const [classData, sectionData, subjectData, userData, timetableData] = await Promise.all([
+        apiFetch<ClassRow[]>("/api/admin/classes"),
+        apiFetch<SectionRow[]>("/api/admin/sections"),
+        apiFetch<SubjectRow[]>("/api/admin/subjects"),
+        apiFetch<UserRow[]>("/api/admin/users?role=Faculty"),
+        apiFetch<TimetableRow[]>("/api/admin/timetable"),
+      ]);
+      setClasses(classData);
+      setSections(sectionData);
+      setSubjects(subjectData);
+      setTeachers(userData);
+      setRows(timetableData);
+
+      const selectedClassId = classId && classData.some((item) => item.id === classId)
+        ? classId
+        : classData[0]?.id || sectionData[0]?.classId || "";
+      const scopedSections = sectionData.filter((item) => item.classId === selectedClassId);
+      const selectedSectionId = sectionId && scopedSections.some((item) => item.id === sectionId)
+        ? sectionId
+        : scopedSections[0]?.id || "";
+
+      setClassId(selectedClassId);
+      setSectionId(selectedSectionId);
+      setPeriodDrafts(buildPeriodDrafts({
+        activeRows: timetableData,
+        activeSectionId: selectedSectionId,
+        activeDay: day,
+        fallbackTeacherId: userData[0]?.id,
+      }));
+    } catch (loadError) {
+      setError(loadError instanceof Error ? loadError.message : "Unable to load timetable");
+    }
+  }, [buildPeriodDrafts, classId, day, sectionId]);
 
   useEffect(() => {
     if (!isSchool) return;
-    void load();
-  }, [isSchool]);
+    const timer = window.setTimeout(() => {
+      void load();
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [isSchool, load]);
+
+  const handleClassChange = (nextClassId: string) => {
+    setClassId(nextClassId);
+    const nextSections = sections.filter((item) => item.classId === nextClassId);
+    const nextSectionId = nextSections.some((item) => item.id === sectionId)
+      ? sectionId
+      : (nextSections[0]?.id || "");
+
+    setSectionId(nextSectionId);
+    setPeriodDrafts(buildPeriodDrafts({
+      activeRows: rows,
+      activeSectionId: nextSectionId,
+      activeDay: day,
+      fallbackTeacherId: classTeachers[0]?.id || teachers[0]?.id,
+    }));
+  };
+
+  const handleSectionChange = (nextSectionId: string) => {
+    setSectionId(nextSectionId);
+    setPeriodDrafts(buildPeriodDrafts({
+      activeRows: rows,
+      activeSectionId: nextSectionId,
+      activeDay: day,
+      fallbackTeacherId: classTeachers[0]?.id || teachers[0]?.id,
+    }));
+  };
+
+  const handleDayChange = (nextDay: string) => {
+    setDay(nextDay);
+    setPeriodDrafts(buildPeriodDrafts({
+      activeRows: rows,
+      activeSectionId: sectionId,
+      activeDay: nextDay,
+      fallbackTeacherId: classTeachers[0]?.id || teachers[0]?.id,
+    }));
+  };
 
   const savePeriod = async (periodNumber: number) => {
     setError("");
     setSuccess("");
     const draft = periodDrafts[periodNumber];
-    if (!draft || !sectionId || !draft.teacherId) {
-      setError("Select section and teacher for this period");
+    if (!draft || !classId || !sectionId || !draft.subjectId || !draft.teacherId) {
+      setError("Select class, section, subject, and teacher for this period");
       return;
     }
 
@@ -172,14 +270,24 @@ export default function AdminTimetablePage() {
 
   return (
     <div className="space-y-6">
-      <SectionCard title="Timetable Grid" description="Select section, then configure day-wise 8 periods">
-        {sections.length === 0 ? <p className="text-sm text-slate-700">Setup Classes first</p> : null}
+      <SectionCard title="Timetable Grid" description="Select class and section, then configure day-wise 8 periods">
+        {classes.length === 0 ? <p className="text-sm text-slate-700">Setup Classes first</p> : null}
         <div className="mb-4 grid gap-3 text-sm md:grid-cols-2">
           <label className="space-y-1">
+            <span className="text-xs font-semibold text-slate-600">Class</span>
+            <select value={classId} onChange={(e) => handleClassChange(e.target.value)} className="w-full rounded-xl border border-slate-300 px-3 py-2" required>
+              <option value="">Select class</option>
+              {classes.map((item) => (
+                <option key={item.id} value={item.id}>{item.name}</option>
+              ))}
+            </select>
+          </label>
+
+          <label className="space-y-1">
             <span className="text-xs font-semibold text-slate-600">Section</span>
-            <select value={sectionId} onChange={(e) => setSectionId(e.target.value)} className="w-full rounded-xl border border-slate-300 px-3 py-2" required>
+            <select value={sectionId} onChange={(e) => handleSectionChange(e.target.value)} className="w-full rounded-xl border border-slate-300 px-3 py-2" required>
               <option value="">Select section</option>
-              {sections.map((section) => (
+              {classSections.map((section) => (
                 <option key={section.id} value={section.id}>{section.name}</option>
               ))}
             </select>
@@ -191,7 +299,7 @@ export default function AdminTimetablePage() {
             <button
               key={item}
               type="button"
-              onClick={() => setDay(item)}
+              onClick={() => handleDayChange(item)}
               className={`rounded-lg px-3 py-1.5 text-sm font-semibold ${day === item ? "bg-teal-700 text-white" : "bg-slate-100 text-slate-700"}`}
             >
               {item.slice(0, 3)}
@@ -216,9 +324,10 @@ export default function AdminTimetablePage() {
                   value={draft.subjectId}
                   onChange={(e) => setPeriodDrafts((prev) => ({ ...prev, [period]: { ...draft, subjectId: e.target.value } }))}
                   className="rounded-xl border border-slate-300 px-3 py-2"
+                  required
                 >
                   <option value="">Subject</option>
-                  {subjects.map((subject) => (
+                  {classSubjects.map((subject) => (
                     <option key={subject.id} value={subject.id}>{subject.name}</option>
                   ))}
                 </select>
@@ -227,11 +336,20 @@ export default function AdminTimetablePage() {
                   value={draft.teacherId}
                   onChange={(e) => setPeriodDrafts((prev) => ({ ...prev, [period]: { ...draft, teacherId: e.target.value } }))}
                   className="rounded-xl border border-slate-300 px-3 py-2"
+                  required
                 >
                   <option value="">Teacher</option>
-                  {teachers.map((teacher) => (
+                  {classTeachers
+                    .filter((teacher) => {
+                      if (!draft.subjectId) return true;
+                      const subjectName = subjectNameById.get(draft.subjectId)?.toLowerCase();
+                      if (!subjectName) return true;
+                      const mapped = (teacher.subjectNames ?? []).map((name) => name.toLowerCase());
+                      return mapped.length === 0 || mapped.includes(subjectName);
+                    })
+                    .map((teacher) => (
                     <option key={teacher.id} value={teacher.id}>{teacher.name}</option>
-                  ))}
+                    ))}
                 </select>
 
                 <input
@@ -258,6 +376,10 @@ export default function AdminTimetablePage() {
             );
           })}
         </div>
+
+        <p className="mt-3 text-xs text-slate-600">
+          Saved timetable is section-specific under selected class. It reflects automatically in student and faculty school dashboards.
+        </p>
 
         {error ? <p className="mt-3 text-sm text-rose-700">{error}</p> : null}
         {success ? <p className="mt-3 text-sm text-emerald-700">{success}</p> : null}

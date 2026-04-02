@@ -1,5 +1,5 @@
 import { apiError, apiSuccess } from "@/lib/api";
-import { ensureRole, getRequestContext } from "@/lib/requestContext";
+import { ensureRole, getInstitutionContext, getRequestContext } from "@/lib/requestContext";
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 import { recalcStudentFeeTotals } from "@/lib/feeManagement";
 
@@ -9,6 +9,8 @@ interface StudentRow {
   email: string;
   admission_id: string | null;
   slot_id: string | null;
+  class_id?: string | null;
+  term?: string | null;
   current_semester?: number | null;
 }
 
@@ -81,30 +83,42 @@ export async function GET(request: Request) {
   try {
     const ctx = await getRequestContext();
     if (!ensureRole(ctx.role, ["Admin"])) return apiError("Forbidden", 403);
-    if (!ctx.collegeId) return apiError("Missing college context", 400);
+    const institution = await getInstitutionContext(ctx);
+    const isSchool = institution.institutionType === "school";
 
     const url = new URL(request.url);
     const slotId = url.searchParams.get("slotId");
+    const classId = url.searchParams.get("classId");
     const studentId = url.searchParams.get("studentId");
 
-    if (!slotId) return apiError("slotId is required", 400);
+    if (!isSchool && !slotId) return apiError("slotId is required", 400);
+    if (isSchool && !classId) return apiError("classId is required", 400);
 
     const supabase = getSupabaseAdmin();
 
-    const { data: slot, error: slotError } = await supabase
-      .from("slots")
-      .select("id,course")
-      .eq("id", slotId)
-      .eq("college_id", ctx.collegeId)
-      .single();
+    const target = isSchool
+      ? await supabase
+          .from("classes")
+          .select("id,name")
+          .eq("id", classId)
+          .eq("institution_id", institution.institutionId)
+          .single()
+      : await supabase
+          .from("slots")
+          .select("id,course")
+          .eq("id", slotId)
+          .eq("college_id", institution.institutionId)
+          .single();
 
-    if (slotError || !slot) return apiError("Slot not found", 404);
+    if (target.error || !target.data) {
+      return apiError(isSchool ? "Class not found" : "Slot not found", 404);
+    }
 
     const { data: studentsWithSemester, error: studentsWithSemesterError } = await supabase
       .from("students")
-      .select("id,name,email,admission_id,slot_id,current_semester")
-      .eq("college_id", ctx.collegeId)
-      .eq("slot_id", slotId)
+      .select("id,name,email,admission_id,slot_id,class_id,term,current_semester")
+      .eq("college_id", institution.institutionId)
+      .eq(isSchool ? "class_id" : "slot_id", isSchool ? classId : slotId)
       .order("name", { ascending: true });
 
     let students = (studentsWithSemester ?? []) as StudentRow[];
@@ -113,9 +127,9 @@ export async function GET(request: Request) {
 
       const fallbackStudents = await supabase
         .from("students")
-        .select("id,name,email,admission_id,slot_id")
-        .eq("college_id", ctx.collegeId)
-        .eq("slot_id", slotId)
+        .select("id,name,email,admission_id,slot_id,class_id,term")
+        .eq("college_id", institution.institutionId)
+        .eq(isSchool ? "class_id" : "slot_id", isSchool ? classId : slotId)
         .order("name", { ascending: true });
 
       if (fallbackStudents.error) return apiError(fallbackStudents.error.message, 500);
@@ -130,10 +144,11 @@ export async function GET(request: Request) {
       let feesQuery = supabase
         .from("student_fees")
         .select("id,student_id,slot_id,fee_structure_id,base_total,discount_total,fine_total,extra_total,grand_total,paid_total,due_total,status,due_date,generated_at")
-        .eq("college_id", ctx.collegeId)
-        .eq("slot_id", slotId)
+        .eq("college_id", institution.institutionId)
         .in("student_id", studentIds)
         .order("generated_at", { ascending: false });
+
+      if (!isSchool) feesQuery = feesQuery.eq("slot_id", slotId);
 
       if (studentId) feesQuery = feesQuery.eq("student_id", studentId);
 
@@ -144,7 +159,7 @@ export async function GET(request: Request) {
       let legacyFeesQuery = supabase
         .from("fees")
         .select("id,student_id,amount,paid_amount,due_amount,status,generated_at")
-        .eq("college_id", ctx.collegeId)
+        .eq("college_id", institution.institutionId)
         .in("student_id", studentIds)
         .order("generated_at", { ascending: false });
 
@@ -164,11 +179,11 @@ export async function GET(request: Request) {
         ),
       );
 
-      if (semesterValues.length > 0) {
+      if (!isSchool && semesterValues.length > 0) {
         const { data: activeStructures, error: activeStructuresError } = await supabase
           .from("fee_structures")
           .select("id,semester,name")
-          .eq("college_id", ctx.collegeId)
+          .eq("college_id", institution.institutionId)
           .eq("slot_id", slotId)
           .eq("is_active", true)
           .in("semester", semesterValues)
@@ -226,7 +241,7 @@ export async function GET(request: Request) {
             const { data: createdFee, error: createdFeeError } = await supabase
               .from("student_fees")
               .insert({
-                college_id: ctx.collegeId,
+                college_id: institution.institutionId,
                 student_id: student.id,
                 admission_id: student.admission_id,
                 slot_id: slotId,
@@ -241,7 +256,7 @@ export async function GET(request: Request) {
             const feeId = createdFee.id as string;
             const itemPayload = (structureComponents ?? []).map((component) => ({
               student_fee_id: feeId,
-              college_id: ctx.collegeId,
+              college_id: institution.institutionId,
               source_component_id: component.id,
               item_type: "component",
               label: component.component_name,
@@ -267,8 +282,131 @@ export async function GET(request: Request) {
             let refreshFeesQuery = supabase
               .from("student_fees")
               .select("id,student_id,slot_id,fee_structure_id,base_total,discount_total,fine_total,extra_total,grand_total,paid_total,due_total,status,due_date,generated_at")
-              .eq("college_id", ctx.collegeId)
-              .eq("slot_id", slotId)
+              .eq("college_id", institution.institutionId)
+              .in("student_id", studentIds)
+              .order("generated_at", { ascending: false });
+
+            if (!isSchool) refreshFeesQuery = refreshFeesQuery.eq("slot_id", slotId);
+
+            if (studentId) refreshFeesQuery = refreshFeesQuery.eq("student_id", studentId);
+
+            const { data: refreshedFees, error: refreshedFeesError } = await refreshFeesQuery;
+            if (refreshedFeesError) return apiError(refreshedFeesError.message, 500);
+            fees = (refreshedFees ?? []) as StudentFeeRow[];
+          }
+        }
+      } else if (isSchool) {
+        const termValues = Array.from(
+          new Set(
+            (students ?? [])
+              .map((student) => (student.term ?? "").trim())
+              .filter((term) => term.length > 0),
+          ),
+        );
+
+        if (termValues.length > 0) {
+          const { data: activeStructures, error: activeStructuresError } = await supabase
+            .from("fee_structures")
+            .select("id,term,name,updated_at")
+            .eq("college_id", institution.institutionId)
+            .eq("class_id", classId)
+            .eq("is_active", true)
+            .in("term", termValues)
+            .order("updated_at", { ascending: false });
+
+          if (activeStructuresError) {
+            return apiError(activeStructuresError.message, 500);
+          }
+
+          const structureByTerm = new Map<string, { id: string; name: string }>();
+          for (const row of activeStructures ?? []) {
+            const term = String(row.term ?? "").trim();
+            if (!term) continue;
+            if (!structureByTerm.has(term)) {
+              structureByTerm.set(term, {
+                id: row.id as string,
+                name: row.name as string,
+              });
+            }
+          }
+
+          const existingFeeKey = new Set(
+            fees.map((fee) => `${fee.student_id}:${fee.fee_structure_id ?? ""}`),
+          );
+          const componentCache = new Map<string, Array<{ id: string; component_name: string; default_amount: number | string }>>();
+
+          let healed = false;
+
+          for (const student of students ?? []) {
+            const studentTerm = String(student.term ?? "").trim();
+            if (!studentTerm) continue;
+
+            const structure = structureByTerm.get(studentTerm);
+            if (!structure) continue;
+
+            const key = `${student.id as string}:${structure.id}`;
+            if (existingFeeKey.has(key)) continue;
+
+            let structureComponents = componentCache.get(structure.id);
+            if (!structureComponents) {
+              const { data: loadedComponents, error: loadedComponentsError } = await supabase
+                .from("fee_components")
+                .select("id,component_name,default_amount")
+                .eq("fee_structure_id", structure.id)
+                .order("sort_order", { ascending: true });
+
+              if (loadedComponentsError) return apiError(loadedComponentsError.message, 500);
+              structureComponents = (loadedComponents ?? []) as Array<{ id: string; component_name: string; default_amount: number | string }>;
+              componentCache.set(structure.id, structureComponents);
+            }
+
+            if ((structureComponents ?? []).length === 0) continue;
+
+            const { data: createdFee, error: createdFeeError } = await supabase
+              .from("student_fees")
+              .insert({
+                college_id: institution.institutionId,
+                student_id: student.id,
+                admission_id: student.admission_id,
+                slot_id: null,
+                fee_structure_id: structure.id,
+                notes: `Auto-generated for ${studentTerm}`,
+              })
+              .select("id")
+              .single();
+
+            if (createdFeeError) return apiError(createdFeeError.message, 500);
+
+            const feeId = createdFee.id as string;
+            const itemPayload = (structureComponents ?? []).map((component) => ({
+              student_fee_id: feeId,
+              college_id: institution.institutionId,
+              source_component_id: component.id,
+              item_type: "component",
+              label: component.component_name,
+              amount: Number(component.default_amount ?? 0),
+              quantity: 1,
+              metadata: {
+                source: "auto_heal_class_term",
+                term: studentTerm,
+                structureName: structure.name,
+              },
+            }));
+
+            const { error: insertItemsError } = await supabase.from("student_fee_items").insert(itemPayload);
+            if (insertItemsError) return apiError(insertItemsError.message, 500);
+
+            await recalcStudentFeeTotals(supabase, feeId);
+
+            healed = true;
+            existingFeeKey.add(key);
+          }
+
+          if (healed) {
+            let refreshFeesQuery = supabase
+              .from("student_fees")
+              .select("id,student_id,slot_id,fee_structure_id,base_total,discount_total,fine_total,extra_total,grand_total,paid_total,due_total,status,due_date,generated_at")
+              .eq("college_id", institution.institutionId)
               .in("student_id", studentIds)
               .order("generated_at", { ascending: false });
 
@@ -351,6 +489,8 @@ export async function GET(request: Request) {
     fees = Array.from(dedupedFeesByStudentAndStructure.values());
 
     const shouldIncludeFeeForStudent = (fee: StudentFeeRow) => {
+      if (isSchool) return true;
+
       const structureId = fee.fee_structure_id;
       if (!structureId) return true;
 
@@ -387,9 +527,11 @@ export async function GET(request: Request) {
     legacyFees = Array.from(latestLegacyFeeByStudent.values());
 
     const summaryByStudent = new Map<string, { totalDue: number; totalPaid: number; feesCount: number }>();
+    const studentsWithV3Fees = new Set<string>();
     for (const fee of fees) {
       if (!shouldIncludeFeeForStudent(fee)) continue;
       const key = fee.student_id;
+      studentsWithV3Fees.add(key);
       const current = summaryByStudent.get(key) ?? { totalDue: 0, totalPaid: 0, feesCount: 0 };
       current.totalDue += Number(fee.due_total ?? 0);
       current.totalPaid += Number(fee.paid_total ?? 0);
@@ -398,6 +540,7 @@ export async function GET(request: Request) {
     }
 
     for (const fee of legacyFees) {
+      if (isSchool && studentsWithV3Fees.has(fee.student_id)) continue;
       const normalized = normalizeLegacyFee(fee);
       const key = fee.student_id;
       const current = summaryByStudent.get(key) ?? { totalDue: 0, totalPaid: 0, feesCount: 0 };
@@ -423,13 +566,17 @@ export async function GET(request: Request) {
 
     if (!studentId) {
       return apiSuccess({
-        slot: { id: slot.id, course: slot.course },
+        target: {
+          id: target.data.id as string,
+          name: isSchool ? String((target.data as { name?: string }).name ?? "") : String((target.data as { course?: string }).course ?? ""),
+          kind: isSchool ? "class" : "slot",
+        },
         students: studentSummaries,
       });
     }
 
     const selectedStudent = (students ?? []).find((row) => row.id === studentId) as StudentRow | undefined;
-    if (!selectedStudent) return apiError("Student not found in selected slot", 404);
+    if (!selectedStudent) return apiError(`Student not found in selected ${isSchool ? "class" : "slot"}`, 404);
 
     const selectedFees = fees.filter((fee) => fee.student_id === selectedStudent.id && shouldIncludeFeeForStudent(fee));
 
@@ -512,7 +659,11 @@ export async function GET(request: Request) {
     });
 
     return apiSuccess({
-      slot: { id: slot.id, course: slot.course },
+      target: {
+        id: target.data.id as string,
+        name: isSchool ? String((target.data as { name?: string }).name ?? "") : String((target.data as { course?: string }).course ?? ""),
+        kind: isSchool ? "class" : "slot",
+      },
       students: studentSummaries,
       selectedStudent: {
         id: selectedStudent.id,
@@ -523,7 +674,11 @@ export async function GET(request: Request) {
       },
       fees: feeDetails,
       legacyFees: legacyFees
-        .filter((fee) => fee.student_id === selectedStudent.id)
+        .filter((fee) => {
+          if (fee.student_id !== selectedStudent.id) return false;
+          if (isSchool && selectedFees.length > 0) return false;
+          return true;
+        })
         .map((fee) => {
           const normalized = normalizeLegacyFee(fee);
           return {

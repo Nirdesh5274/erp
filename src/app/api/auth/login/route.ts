@@ -106,6 +106,19 @@ export async function POST(request: Request) {
     // Successful login: reset counters
     await supabase.from("users").update({ failed_login_attempts: 0, is_locked: false, lock_expires_at: null, last_login_at: new Date().toISOString() }).eq("id", user.id);
 
+    let institutionType: "college" | "school" = "college";
+    if (user.college_id) {
+      const { data: college, error: collegeError } = await supabase
+        .from("colleges")
+        .select("type")
+        .eq("id", user.college_id)
+        .maybeSingle();
+
+      if (!collegeError && college?.type === "school") {
+        institutionType = "school";
+      }
+    }
+
     // If legacy plaintext password is still stored, re-hash it on first successful login
     if (!isHashedPassword(user.password)) {
       const hashed = await bcrypt.hash(body.password, 12);
@@ -119,6 +132,7 @@ export async function POST(request: Request) {
       role: user.role,
       collegeId: user.college_id,
       departmentId: user.department_id,
+      institutionType,
     };
 
     const accessToken = await signAccessToken(authUser);

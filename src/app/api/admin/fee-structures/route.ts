@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { apiError, apiSuccess } from "@/lib/api";
-import { ensureRole, getRequestContext } from "@/lib/requestContext";
+import { ensureRole, getInstitutionContext, getRequestContext } from "@/lib/requestContext";
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 import { recalcStudentFeeTotals } from "@/lib/feeManagement";
 
@@ -12,8 +12,10 @@ const componentSchema = z.object({
 });
 
 const postSchema = z.object({
-  slotId: z.string().uuid(),
-  semester: z.number().int().min(1).max(12),
+  slotId: z.string().uuid().optional(),
+  semester: z.number().int().min(1).max(12).optional(),
+  classId: z.string().uuid().optional(),
+  term: z.string().trim().min(1).max(20).optional(),
   name: z.string().min(1),
   description: z.string().trim().max(400).optional(),
   academicYear: z.string().min(1),
@@ -40,17 +42,36 @@ function isMissingSemesterColumn(message: string | undefined) {
   return msg.includes("semester") && (msg.includes("column") || msg.includes("schema cache"));
 }
 
+function isMissingClassIdColumn(message: string | undefined) {
+  const msg = (message ?? "").toLowerCase();
+  return msg.includes("class_id") && (msg.includes("column") || msg.includes("schema cache"));
+}
+
+function isMissingTermColumn(message: string | undefined) {
+  const msg = (message ?? "").toLowerCase();
+  return msg.includes("term") && (msg.includes("column") || msg.includes("schema cache"));
+}
+
+function isMissingStudentFeesClassOrTermColumn(message: string | undefined) {
+  const msg = (message ?? "").toLowerCase();
+  if (!msg.includes("student_fees")) return false;
+  return (
+    (msg.includes("class_id") || msg.includes("term"))
+    && (msg.includes("column") || msg.includes("schema cache"))
+  );
+}
+
 export async function GET() {
   try {
     const ctx = await getRequestContext();
     if (!ensureRole(ctx.role, ["Admin"])) return apiError("Forbidden", 403);
-    if (!ctx.collegeId) return apiError("Missing college context", 400);
+    const institution = await getInstitutionContext(ctx);
 
     const supabase = getSupabaseAdmin();
     let { data: structures, error: structuresError } = await supabase
       .from("fee_structures")
-      .select("id,college_id,slot_id,semester,name,description,academic_year,is_active,created_at,updated_at")
-      .eq("college_id", ctx.collegeId)
+      .select("id,college_id,slot_id,semester,class_id,term,name,description,academic_year,is_active,created_at,updated_at")
+      .eq("college_id", institution.institutionId)
       .order("updated_at", { ascending: false });
 
     if (structuresError && isMissingSemesterColumn(structuresError.message)) {
@@ -60,8 +81,8 @@ export async function GET() {
     if (structuresError && isMissingDescriptionColumn(structuresError.message)) {
       const fallback = await supabase
         .from("fee_structures")
-        .select("id,college_id,slot_id,semester,name,academic_year,is_active,created_at,updated_at")
-        .eq("college_id", ctx.collegeId)
+        .select("id,college_id,slot_id,semester,class_id,term,name,academic_year,is_active,created_at,updated_at")
+        .eq("college_id", institution.institutionId)
         .order("updated_at", { ascending: false });
 
       if (fallback.error && isMissingSemesterColumn(fallback.error.message)) {
@@ -70,6 +91,10 @@ export async function GET() {
 
       structures = (fallback.data ?? []).map((row) => ({ ...row, description: null }));
       structuresError = fallback.error;
+    }
+
+    if (structuresError && (isMissingClassIdColumn(structuresError.message) || isMissingTermColumn(structuresError.message))) {
+      return apiError("School class/term fields are missing in DB. Run latest migration.", 400);
     }
 
     if (structuresError) return apiError(structuresError.message, 500);
@@ -105,6 +130,8 @@ export async function GET() {
         id: row.id,
         slotId: row.slot_id,
         semester: row.semester,
+        classId: row.class_id,
+        term: row.term,
         name: row.name,
         description: row.description,
         academicYear: row.academic_year,
@@ -123,15 +150,28 @@ export async function POST(request: Request) {
   try {
     const ctx = await getRequestContext();
     if (!ensureRole(ctx.role, ["Admin"])) return apiError("Forbidden", 403);
-    if (!ctx.collegeId) return apiError("Missing college context", 400);
+    const institution = await getInstitutionContext(ctx);
 
     const body = postSchema.parse(await request.json());
     const supabase = getSupabaseAdmin();
 
+    const isSchool = institution.institutionType === "school";
+    if (isSchool) {
+      if (!body.classId) return apiError("classId is required for school fee structures", 400);
+      if (!body.term) return apiError("term is required for school fee structures", 400);
+    } else {
+      if (!body.slotId) return apiError("slotId is required for college fee structures", 400);
+      if (!body.semester) return apiError("semester is required for college fee structures", 400);
+    }
+
+    const normalizedTerm = (body.term ?? "").trim();
+
     const basePayload = {
-      college_id: ctx.collegeId,
-      slot_id: body.slotId,
-      semester: body.semester,
+      college_id: institution.institutionId,
+      slot_id: isSchool ? null : body.slotId,
+      semester: isSchool ? null : body.semester,
+      class_id: isSchool ? body.classId : null,
+      term: isSchool ? normalizedTerm : null,
       name: body.name,
       academic_year: body.academicYear,
       is_active: body.isActive ?? true,
@@ -143,14 +183,18 @@ export async function POST(request: Request) {
       const { error: deactivateError } = await supabase
         .from("fee_structures")
         .update({ is_active: false, updated_by: ctx.userId })
-        .eq("college_id", ctx.collegeId)
-        .eq("slot_id", body.slotId)
-        .eq("semester", body.semester)
+        .eq("college_id", institution.institutionId)
+        .eq(isSchool ? "class_id" : "slot_id", isSchool ? body.classId : body.slotId)
+        .eq(isSchool ? "term" : "semester", isSchool ? normalizedTerm : body.semester)
         .eq("academic_year", body.academicYear)
         .eq("is_active", true);
 
       if (deactivateError && isMissingSemesterColumn(deactivateError.message)) {
         return apiError("Semester field is missing in DB. Run latest migration to enable semester-wise fee structures.", 400);
+      }
+
+      if (deactivateError && (isMissingClassIdColumn(deactivateError.message) || isMissingTermColumn(deactivateError.message))) {
+        return apiError("School class/term fields are missing in DB. Run latest migration.", 400);
       }
 
       if (deactivateError) return apiError(deactivateError.message, 500);
@@ -162,7 +206,7 @@ export async function POST(request: Request) {
         ...basePayload,
         description: body.description ?? null,
       })
-      .select("id,slot_id,semester,name,description,academic_year,is_active,created_at,updated_at")
+      .select("id,slot_id,semester,class_id,term,name,description,academic_year,is_active,created_at,updated_at")
       .single();
 
     if (structureError && isMissingSemesterColumn(structureError.message)) {
@@ -173,7 +217,7 @@ export async function POST(request: Request) {
       const fallback = await supabase
         .from("fee_structures")
         .insert(basePayload)
-        .select("id,slot_id,semester,name,academic_year,is_active,created_at,updated_at")
+        .select("id,slot_id,semester,class_id,term,name,academic_year,is_active,created_at,updated_at")
         .single();
 
       if (fallback.error && isMissingSemesterColumn(fallback.error.message)) {
@@ -184,11 +228,15 @@ export async function POST(request: Request) {
       structureError = fallback.error;
     }
 
+    if (structureError && (isMissingClassIdColumn(structureError.message) || isMissingTermColumn(structureError.message))) {
+      return apiError("School class/term fields are missing in DB. Run latest migration.", 400);
+    }
+
     if (structureError || !structure) return apiError(structureError?.message ?? "Unable to create fee structure", 500);
 
     const componentPayload = body.components.map((component, index) => ({
       fee_structure_id: structure.id,
-      college_id: ctx.collegeId,
+      college_id: institution.institutionId,
       component_key: component.componentKey ? toKey(component.componentKey) : toKey(component.componentName),
       component_name: component.componentName,
       default_amount: component.amount,
@@ -202,15 +250,29 @@ export async function POST(request: Request) {
 
     if (componentsError) return apiError(componentsError.message, 500);
 
-    const { data: slotStudents, error: studentsError } = await supabase
+    let studentsQuery = supabase
       .from("students")
-      .select("id,admission_id,current_semester")
-      .eq("college_id", ctx.collegeId)
-      .eq("slot_id", body.slotId)
-      .eq("current_semester", body.semester);
+      .select("id,admission_id,current_semester,class_id,term")
+      .eq("college_id", institution.institutionId);
+
+    if (isSchool) {
+      studentsQuery = studentsQuery
+        .eq("class_id", body.classId)
+        .eq("term", normalizedTerm);
+    } else {
+      studentsQuery = studentsQuery
+        .eq("slot_id", body.slotId)
+        .eq("current_semester", body.semester);
+    }
+
+    const { data: slotStudents, error: studentsError } = await studentsQuery;
 
     if (studentsError && isMissingSemesterColumn(studentsError.message)) {
       return apiError("Semester field is missing in DB. Run latest migration to enable semester-wise fee structures.", 400);
+    }
+
+    if (studentsError && (isMissingClassIdColumn(studentsError.message) || isMissingTermColumn(studentsError.message))) {
+      return apiError("School class/term fields are missing in DB. Run latest migration.", 400);
     }
 
     if (studentsError) return apiError(studentsError.message, 500);
@@ -220,8 +282,7 @@ export async function POST(request: Request) {
       const { data: existingFees, error: existingFeesError } = await supabase
         .from("student_fees")
         .select("id,student_id")
-        .eq("college_id", ctx.collegeId)
-        .eq("slot_id", body.slotId)
+        .eq("college_id", institution.institutionId)
         .eq("fee_structure_id", structure.id)
         .in("student_id", studentIds);
 
@@ -232,18 +293,39 @@ export async function POST(request: Request) {
 
       if (missingStudents.length > 0) {
         const feeRowsPayload = missingStudents.map((student) => ({
-          college_id: ctx.collegeId,
+          college_id: institution.institutionId,
           student_id: student.id,
           admission_id: student.admission_id,
-          slot_id: body.slotId,
+          slot_id: isSchool ? null : body.slotId,
+          class_id: isSchool ? body.classId : null,
+          term: isSchool ? normalizedTerm : null,
           fee_structure_id: structure.id,
           notes: body.description ?? null,
         }));
 
-        const { data: createdFees, error: createdFeesError } = await supabase
+        let { data: createdFees, error: createdFeesError } = await supabase
           .from("student_fees")
           .insert(feeRowsPayload)
           .select("id,student_id");
+
+        if (createdFeesError && isSchool && isMissingStudentFeesClassOrTermColumn(createdFeesError.message)) {
+          const fallbackRowsPayload = missingStudents.map((student) => ({
+            college_id: institution.institutionId,
+            student_id: student.id,
+            admission_id: student.admission_id,
+            slot_id: null,
+            fee_structure_id: structure.id,
+            notes: body.description ?? null,
+          }));
+
+          const fallbackInsert = await supabase
+            .from("student_fees")
+            .insert(fallbackRowsPayload)
+            .select("id,student_id");
+
+          createdFees = fallbackInsert.data;
+          createdFeesError = fallbackInsert.error;
+        }
 
         if (createdFeesError) return apiError(createdFeesError.message, 500);
 
@@ -256,7 +338,7 @@ export async function POST(request: Request) {
         const itemsPayload = (createdFees ?? []).flatMap((fee) =>
           componentRows.map((component) => ({
             student_fee_id: fee.id,
-            college_id: ctx.collegeId,
+            college_id: institution.institutionId,
             source_component_id: component.id,
             item_type: "component",
             label: component.component_name,
@@ -284,6 +366,8 @@ export async function POST(request: Request) {
         id: structure.id,
         slotId: structure.slot_id,
         semester: structure.semester,
+        classId: structure.class_id,
+        term: structure.term,
         name: structure.name,
         description: structure.description,
         academicYear: structure.academic_year,

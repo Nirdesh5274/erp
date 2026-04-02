@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { apiError, apiSuccess } from "@/lib/api";
-import { ensureRole, getRequestContext } from "@/lib/requestContext";
+import { ensureRole, getInstitutionContext, getRequestContext } from "@/lib/requestContext";
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 
 const schema = z.object({
@@ -39,24 +39,11 @@ async function ensureSchoolDepartmentId(params: {
   return created.id as string;
 }
 
-async function getInstitutionType(collegeId: string) {
-  const supabase = getSupabaseAdmin();
-  const { data, error } = await supabase
-    .from("colleges")
-    .select("type")
-    .eq("id", collegeId)
-    .maybeSingle();
-
-  if (error) throw new Error(error.message);
-  return data?.type === "school" ? "school" : "college";
-}
-
 export async function GET(request: Request) {
   try {
     const ctx = await getRequestContext();
     if (!ensureRole(ctx.role, ["Admin", "HOD", "Faculty"])) return apiError("Forbidden", 403);
-    if (!ctx.collegeId) return apiError("Missing college context", 400);
-    const institutionId = ctx.collegeId;
+    const { institutionId, collegeId } = await getInstitutionContext(ctx);
 
     const { searchParams } = new URL(request.url);
     const classId = searchParams.get("classId");
@@ -66,7 +53,7 @@ export async function GET(request: Request) {
     let query = supabase
       .from("subjects")
       .select("id,name,department_id,college_id,institution_id,class_id,code,type,periods_per_week,created_at")
-      .eq("college_id", ctx.collegeId)
+      .eq("college_id", collegeId)
       .eq("institution_id", institutionId)
       .order("name", { ascending: true });
 
@@ -98,9 +85,7 @@ export async function POST(request: Request) {
   try {
     const ctx = await getRequestContext();
     if (!ensureRole(ctx.role, ["Admin", "HOD"])) return apiError("Forbidden", 403);
-    if (!ctx.collegeId) return apiError("Missing college context", 400);
-    const institutionId = ctx.collegeId;
-    const institutionType = await getInstitutionType(ctx.collegeId);
+    const { institutionId, institutionType, collegeId } = await getInstitutionContext(ctx);
 
     const body = schema.parse(await request.json());
     const normalizedName = body.name.trim();
@@ -117,7 +102,7 @@ export async function POST(request: Request) {
     const supabase = getSupabaseAdmin();
     let insertPayload = {
       name: normalizedName,
-      college_id: ctx.collegeId,
+      college_id: collegeId,
       institution_id: institutionId,
       department_id: body.departmentId ?? null,
       class_id: body.classId ?? null,
@@ -138,7 +123,7 @@ export async function POST(request: Request) {
       && error.message.toLowerCase().includes("department_id")
       && error.message.toLowerCase().includes("null value")
     ) {
-      const fallbackDepartmentId = await ensureSchoolDepartmentId({ supabase, collegeId: ctx.collegeId });
+      const fallbackDepartmentId = await ensureSchoolDepartmentId({ supabase, collegeId: institutionId });
       insertPayload = { ...insertPayload, department_id: fallbackDepartmentId };
 
       const retry = await supabase

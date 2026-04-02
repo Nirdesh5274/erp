@@ -8,6 +8,7 @@ const statusEnum = z.enum(["present", "absent", "late", "half_day", "on_duty", "
 const postSchema = z.object({
   lectureId: z.string().uuid(),
   attendanceDate: z.string().date(),
+  periodNumber: z.number().int().min(1).max(12).optional(),
   entries: z.array(
     z.object({
       studentId: z.string().uuid(),
@@ -30,8 +31,13 @@ export async function GET(request: Request) {
 
     const { searchParams } = new URL(request.url);
     const lectureId = searchParams.get("lectureId");
+    const periodNumberParam = searchParams.get("periodNumber");
+    const periodNumber = periodNumberParam ? Number(periodNumberParam) : null;
 
     if (!lectureId) return apiError("lectureId is required", 400);
+    if (periodNumber !== null && (!Number.isInteger(periodNumber) || periodNumber < 1 || periodNumber > 12)) {
+      return apiError("periodNumber must be an integer between 1 and 12", 400);
+    }
 
     const supabase = getSupabaseAdmin();
 
@@ -54,11 +60,17 @@ export async function GET(request: Request) {
 
     if (studentsError) return apiError(studentsError.message, 500);
 
-    const { data: existing, error: existingError } = await supabase
+    let existingQuery = supabase
       .from("attendance")
       .select("student_id,status")
       .eq("lecture_id", lectureId)
       .eq("date", lecture.starts_at ? lecture.starts_at.slice(0, 10) : null);
+
+    if (periodNumber !== null) {
+      existingQuery = existingQuery.eq("period_number", periodNumber);
+    }
+
+    const { data: existing, error: existingError } = await existingQuery;
 
     if (existingError) return apiError(existingError.message, 500);
 
@@ -112,6 +124,7 @@ export async function POST(request: Request) {
       lecture_id: body.lectureId,
       student_id: entry.studentId,
       date: body.attendanceDate,
+      period_number: body.periodNumber ?? null,
       status: entry.status.toLowerCase(),
       marked_by: ctx.userId,
       override_reason: body.overrideReason ?? null,
@@ -127,6 +140,7 @@ export async function POST(request: Request) {
         lecture_id: body.lectureId,
         student_id: entry.studentId,
         date: body.attendanceDate,
+        period_number: body.periodNumber ?? null,
         status: toLegacyAttendanceStatus(entry.status),
         marked_by: ctx.userId,
         override_reason: body.overrideReason ?? null,

@@ -79,6 +79,7 @@ export async function proxy(req: NextRequest) {
         role: refreshPayload.role,
         collegeId: refreshPayload.collegeId ?? null,
         departmentId: refreshPayload.departmentId ?? null,
+        institutionType: refreshPayload.institutionType === "school" ? "school" : "college",
         name: refreshPayload.name ?? "",
         email: refreshPayload.email ?? "",
       };
@@ -125,6 +126,7 @@ export async function proxy(req: NextRequest) {
   requestHeaders.set("x-role", String(payload.role));
   requestHeaders.set("x-college-id", String(payload.collegeId ?? ""));
   requestHeaders.set("x-department-id", String(payload.departmentId ?? ""));
+  requestHeaders.set("x-institution-type", String(payload.institutionType ?? "college"));
   requestHeaders.set("x-user-id", String(payload.sub));
 
   let res: NextResponse;
@@ -140,6 +142,7 @@ export async function proxy(req: NextRequest) {
   res.headers.set("x-role", String(payload.role));
   res.headers.set("x-college-id", String(payload.collegeId ?? ""));
   res.headers.set("x-department-id", String(payload.departmentId ?? ""));
+  res.headers.set("x-institution-type", String(payload.institutionType ?? "college"));
   res.headers.set("x-user-id", String(payload.sub));
 
   return res;
