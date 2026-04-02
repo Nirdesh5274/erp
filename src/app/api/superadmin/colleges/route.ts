@@ -6,6 +6,7 @@ import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 const schema = z.object({
   name: z.string().min(2),
   location: z.string().min(2),
+  type: z.enum(["college", "school"]).optional(),
   adminName: z.string().min(2),
   adminEmail: z.string().email(),
   adminPassword: z.string().min(4),
@@ -35,7 +36,7 @@ export async function POST(request: Request) {
 
     const { data: college, error: collegeError } = await supabase
       .from("colleges")
-      .insert({ name: body.name, location: body.location })
+      .insert({ name: body.name, location: body.location, type: body.type ?? "college" })
       .select("*")
       .single();
 

@@ -12,6 +12,12 @@ interface ProfileResponse {
     slotId: string | null;
     course: string | null;
     currentSemester: number | null;
+    classId: string | null;
+    className: string | null;
+    sectionId: string | null;
+    sectionName: string | null;
+    rollNumber: string | null;
+    term: string | null;
     admissionId: string | null;
   };
   subjects: Array<{ id: string; name: string; facultyName: string | null }>;
@@ -41,7 +47,7 @@ export async function GET() {
 
     const { data: studentRowWithSemester, error: studentWithSemesterError } = await supabase
       .from("students")
-      .select("id,department_id,slot_id,admission_id,name,email,current_semester")
+      .select("id,department_id,slot_id,class_id,section_id,roll_number,term,admission_id,name,email,current_semester")
       .eq("college_id", ctx.collegeId)
       .eq("user_id", ctx.userId)
       .maybeSingle();
@@ -51,6 +57,10 @@ export async function GET() {
           id: string;
           department_id: string | null;
           slot_id: string | null;
+          class_id?: string | null;
+          section_id?: string | null;
+          roll_number?: string | null;
+          term?: string | null;
           admission_id: string | null;
           name: string;
           email: string;
@@ -65,7 +75,7 @@ export async function GET() {
 
       const { data: fallbackStudentRow, error: fallbackStudentError } = await supabase
         .from("students")
-        .select("id,department_id,slot_id,admission_id,name,email")
+        .select("id,department_id,slot_id,class_id,section_id,roll_number,term,admission_id,name,email")
         .eq("college_id", ctx.collegeId)
         .eq("user_id", ctx.userId)
         .maybeSingle();
@@ -76,17 +86,29 @@ export async function GET() {
 
     const departmentId = studentRow?.department_id ?? userRow?.department_id ?? null;
 
-    const [{ data: departmentRow }, { data: slotRow }] = await Promise.all([
+    const [{ data: departmentRow }, { data: slotRow }, { data: classRow }, { data: sectionRow }] = await Promise.all([
       departmentId
         ? supabase.from("departments").select("id,name").eq("id", departmentId).eq("college_id", ctx.collegeId).maybeSingle()
         : { data: null, error: null },
       studentRow?.slot_id
         ? supabase.from("slots").select("id,course").eq("id", studentRow.slot_id).eq("college_id", ctx.collegeId).maybeSingle()
         : { data: null, error: null },
+      studentRow?.class_id
+        ? supabase.from("classes").select("id,name").eq("id", studentRow.class_id).eq("institution_id", ctx.collegeId).maybeSingle()
+        : { data: null, error: null },
+      studentRow?.section_id
+        ? supabase.from("sections").select("id,name").eq("id", studentRow.section_id).eq("institution_id", ctx.collegeId).maybeSingle()
+        : { data: null, error: null },
     ]);
 
-    const { data: subjectsRows, error: subjectsError } = departmentId
-      ? await supabase.from("subjects").select("id,name").eq("department_id", departmentId).eq("college_id", ctx.collegeId).order("name")
+    const subjectsQuery = studentRow?.class_id
+      ? supabase.from("subjects").select("id,name").eq("class_id", studentRow.class_id).eq("college_id", ctx.collegeId).order("name")
+      : departmentId
+        ? supabase.from("subjects").select("id,name").eq("department_id", departmentId).eq("college_id", ctx.collegeId).order("name")
+        : null;
+
+    const { data: subjectsRows, error: subjectsError } = subjectsQuery
+      ? await subjectsQuery
       : { data: [], error: null };
 
     if (subjectsError) return apiError(subjectsError.message, 500);
@@ -126,6 +148,12 @@ export async function GET() {
         slotId: studentRow?.slot_id ?? null,
         course: slotRow?.course ?? null,
         currentSemester: studentRow?.current_semester ?? null,
+        classId: studentRow?.class_id ?? null,
+        className: classRow?.name ?? null,
+        sectionId: studentRow?.section_id ?? null,
+        sectionName: sectionRow?.name ?? null,
+        rollNumber: studentRow?.roll_number ?? null,
+        term: studentRow?.term ?? null,
         admissionId: studentRow?.admission_id ?? null,
       },
       subjects: (subjectsRows ?? []).map((s) => ({

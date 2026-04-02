@@ -9,12 +9,14 @@ interface CollegeRow {
   id: string;
   name: string;
   location: string;
+  type?: "college" | "school";
   created_at: string;
 }
 
 interface CreateCollegePayload {
   name: string;
   location: string;
+  type: "college" | "school";
   adminName: string;
   adminEmail: string;
   adminPassword: string;
@@ -28,6 +30,7 @@ export default function SuperAdminCollegesPage() {
 
   const [name, setName] = useState("");
   const [location, setLocation] = useState("");
+  const [type, setType] = useState<"college" | "school">("college");
   const [adminName, setAdminName] = useState("");
   const [adminEmail, setAdminEmail] = useState("");
   const [adminPassword, setAdminPassword] = useState("");
@@ -54,7 +57,7 @@ export default function SuperAdminCollegesPage() {
     setSubmitting(true);
     setError("");
     try {
-      const payload: CreateCollegePayload = { name, location, adminName, adminEmail, adminPassword };
+      const payload: CreateCollegePayload = { name, location, type, adminName, adminEmail, adminPassword };
       await apiFetch<{ id: string }>("/api/superadmin/colleges", {
         method: "POST",
         body: JSON.stringify(payload),
@@ -62,6 +65,7 @@ export default function SuperAdminCollegesPage() {
 
       setName("");
       setLocation("");
+      setType("college");
       setAdminName("");
       setAdminEmail("");
       setAdminPassword("");
@@ -83,6 +87,10 @@ export default function SuperAdminCollegesPage() {
         <form onSubmit={handleCreate} className="grid gap-3 md:grid-cols-2 text-sm">
           <input value={name} onChange={(e) => setName(e.target.value)} placeholder="College name" className="rounded-xl border border-slate-300 px-3 py-2" required />
           <input value={location} onChange={(e) => setLocation(e.target.value)} placeholder="Location" className="rounded-xl border border-slate-300 px-3 py-2" required />
+          <select value={type} onChange={(e) => setType((e.target.value as "college" | "school") ?? "college")} className="rounded-xl border border-slate-300 px-3 py-2" required>
+            <option value="college">College / University</option>
+            <option value="school">School (Class 1-12)</option>
+          </select>
           <input value={adminName} onChange={(e) => setAdminName(e.target.value)} placeholder="Admin name" className="rounded-xl border border-slate-300 px-3 py-2" required />
           <input value={adminEmail} onChange={(e) => setAdminEmail(e.target.value)} placeholder="Admin email" type="email" className="rounded-xl border border-slate-300 px-3 py-2" required />
           <input value={adminPassword} onChange={(e) => setAdminPassword(e.target.value)} placeholder="Admin password" type="password" className="rounded-xl border border-slate-300 px-3 py-2" required />
@@ -101,6 +109,7 @@ export default function SuperAdminCollegesPage() {
               <tr className="border-b border-slate-200 text-slate-500">
                 <th className="py-2">College</th>
                 <th className="py-2">Location</th>
+                <th className="py-2">Type</th>
                 <th className="py-2">Created</th>
               </tr>
             </thead>
@@ -109,6 +118,11 @@ export default function SuperAdminCollegesPage() {
                 <tr key={college.id} className="border-b border-slate-100 text-slate-700">
                   <td className="py-2 font-semibold">{college.name}</td>
                   <td className="py-2">{college.location}</td>
+                  <td className="py-2">
+                    <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ${college.type === "school" ? "bg-emerald-100 text-emerald-700" : "bg-sky-100 text-sky-700"}`}>
+                      {college.type === "school" ? "SCHOOL" : "COLLEGE"}
+                    </span>
+                  </td>
                   <td className="py-2">{new Date(college.created_at).toLocaleString()}</td>
                 </tr>
               ))}

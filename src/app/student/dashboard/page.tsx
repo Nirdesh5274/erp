@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { SectionCard } from "@/components/ui/SectionCard";
 import { PageSkeleton } from "@/components/ui/skeletons";
 import { StatusBadge } from "@/components/ui/StatusBadge";
+import { useInstitutionType } from "@/hooks/useInstitutionType";
 import { apiFetch } from "@/lib/clientApi";
 
 interface DashboardResponse {
@@ -47,6 +48,28 @@ interface ScheduleResponse {
   }>;
 }
 
+interface ProfileResponse {
+  student: {
+    className: string | null;
+    sectionName: string | null;
+    rollNumber: string | null;
+    term: string | null;
+    currentSemester: number | null;
+    course: string | null;
+  };
+  subjects: Array<{ id: string; name: string; facultyName: string | null }>;
+}
+
+interface StudentTimetableRow {
+  id: string;
+  day: string;
+  periodNumber: number;
+  startTime: string | null;
+  endTime: string | null;
+  subjectName: string;
+  teacherName: string;
+}
+
 function useCountdown(targetIso: string | null) {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
@@ -80,10 +103,13 @@ function AttendanceGauge({ percent }: { percent: number }) {
 }
 
 export default function StudentDashboardPage() {
+  const { isSchool } = useInstitutionType();
   const [dashboard, setDashboard] = useState<DashboardResponse | null>(null);
   const [attendance, setAttendance] = useState<AttendanceSummary | null>(null);
   const [fees, setFees] = useState<FeesResponse | null>(null);
   const [schedule, setSchedule] = useState<ScheduleResponse | null>(null);
+  const [profile, setProfile] = useState<ProfileResponse | null>(null);
+  const [schoolTimetable, setSchoolTimetable] = useState<StudentTimetableRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -94,24 +120,33 @@ export default function StudentDashboardPage() {
       setLoading(true);
       setError(null);
       try {
-        const [dash, att, feeData] = await Promise.all([
+        const [dash, att, feeData, profileData] = await Promise.all([
           apiFetch<DashboardResponse>("/api/student/dashboard"),
           apiFetch<AttendanceSummary>("/api/student/attendance/summary"),
           apiFetch<FeesResponse>("/api/student/fees"),
+          apiFetch<ProfileResponse>("/api/student/profile"),
         ]);
         setDashboard(dash);
         setAttendance(att);
         setFees(feeData);
+        setProfile(profileData);
 
-        const now = new Date();
-        const dayStart = new Date(now);
-        dayStart.setHours(0, 0, 0, 0);
-        const dayEnd = new Date(now);
-        dayEnd.setHours(23, 59, 59, 999);
-        const params = new URLSearchParams({ from: dayStart.toISOString(), to: dayEnd.toISOString() });
-        if (dash.departmentId) params.set("departmentId", dash.departmentId);
-        const sched = await apiFetch<ScheduleResponse>(`/api/hod/schedule?${params.toString()}`);
-        setSchedule({ ...sched, lectures: (sched.lectures ?? []).slice(0, 8) });
+        if (isSchool) {
+          const schoolSchedule = await apiFetch<StudentTimetableRow[]>("/api/student/timetable");
+          setSchoolTimetable(schoolSchedule);
+          setSchedule({ lectures: [] });
+        } else {
+          const now = new Date();
+          const dayStart = new Date(now);
+          dayStart.setHours(0, 0, 0, 0);
+          const dayEnd = new Date(now);
+          dayEnd.setHours(23, 59, 59, 999);
+          const params = new URLSearchParams({ from: dayStart.toISOString(), to: dayEnd.toISOString() });
+          if (dash.departmentId) params.set("departmentId", dash.departmentId);
+          const sched = await apiFetch<ScheduleResponse>(`/api/hod/schedule?${params.toString()}`);
+          setSchedule({ ...sched, lectures: (sched.lectures ?? []).slice(0, 8) });
+          setSchoolTimetable([]);
+        }
       } catch (err) {
         setError(err instanceof Error ? err.message : "Unable to load dashboard");
       } finally {
@@ -120,7 +155,7 @@ export default function StudentDashboardPage() {
     };
 
     void load();
-  }, []);
+  }, [isSchool]);
 
   const pendingDue = useMemo(() => {
     const total = (fees?.fees ?? []).reduce((sum, fee) => sum + (fee.status !== "Paid" ? Number(fee.due_amount ?? 0) : 0), 0);
@@ -161,6 +196,17 @@ export default function StudentDashboardPage() {
 
       <div className="grid gap-4 lg:grid-cols-3">
         <div className="lg:col-span-2 space-y-4">
+          {isSchool ? (
+            <SectionCard title="Student Profile" description="School class details">
+              <div className="grid gap-2 text-sm md:grid-cols-2">
+                <p><span className="font-semibold">Class:</span> {profile?.student.className ?? "N/A"}</p>
+                <p><span className="font-semibold">Section:</span> {profile?.student.sectionName ?? "N/A"}</p>
+                <p><span className="font-semibold">Roll No:</span> {profile?.student.rollNumber ?? "N/A"}</p>
+                <p><span className="font-semibold">Term:</span> {profile?.student.term ?? "N/A"}</p>
+              </div>
+            </SectionCard>
+          ) : null}
+
           <SectionCard title="Next lecture" description="Countdown and details">
             <div className="flex flex-wrap items-center justify-between gap-4">
               <div>
@@ -180,9 +226,22 @@ export default function StudentDashboardPage() {
             </div>
           </SectionCard>
 
-          <SectionCard title="Today's schedule" description="Timeline">
+          <SectionCard title={isSchool ? "Timetable" : "Today's schedule"} description="Timeline">
             <div className="space-y-3 text-sm">
-              {todayLectures.map((lec) => (
+              {isSchool
+                ? schoolTimetable.map((item) => (
+                    <div key={item.id} className="flex items-center justify-between rounded-xl border border-slate-200 bg-white px-4 py-3 shadow-sm">
+                      <div>
+                        <p className="text-base font-semibold text-slate-900">{item.subjectName}</p>
+                        <p className="text-slate-700">{item.teacherName}</p>
+                      </div>
+                      <div className="text-right text-xs text-slate-600">
+                        <p>{item.day} • Period {item.periodNumber}</p>
+                        <p>{item.startTime || "--:--"} - {item.endTime || "--:--"}</p>
+                      </div>
+                    </div>
+                  ))
+                : todayLectures.map((lec) => (
                 <div key={lec.id} className="flex items-center justify-between rounded-xl border border-slate-200 bg-white px-4 py-3 shadow-sm">
                   <div>
                     <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">{lec.departmentName}</p>
@@ -199,7 +258,7 @@ export default function StudentDashboardPage() {
                   </div>
                 </div>
               ))}
-              {todayLectures.length === 0 ? <p className="text-xs text-slate-600">No lectures today.</p> : null}
+              {(isSchool ? schoolTimetable.length === 0 : todayLectures.length === 0) ? <p className="text-xs text-slate-600">No schedule today.</p> : null}
             </div>
           </SectionCard>
         </div>

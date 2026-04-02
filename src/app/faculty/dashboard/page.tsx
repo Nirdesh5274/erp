@@ -6,6 +6,7 @@ import { CalendarClock, CheckCircle2, Clock3 } from "lucide-react";
 import { SectionCard } from "@/components/ui/SectionCard";
 import { StatCard } from "@/components/ui/StatCard";
 import { PageSkeleton } from "@/components/ui/skeletons";
+import { useInstitutionType } from "@/hooks/useInstitutionType";
 import { apiFetch } from "@/lib/clientApi";
 
 interface LectureRow {
@@ -18,6 +19,26 @@ interface LectureRow {
   marked_present: number;
   starts_at: string;
   ends_at: string;
+}
+
+interface TodayScheduleResponse {
+  mode: "school" | "college";
+  periods?: Array<{
+    id: string;
+    periodNumber: number;
+    subjectName: string;
+    sectionName: string;
+    roomName: string;
+    startTime: string | null;
+    endTime: string | null;
+  }>;
+  lectures?: Array<{
+    id: string;
+    subjectName: string;
+    roomName: string;
+    startsAt: string;
+    endsAt: string;
+  }>;
 }
 
 function CountdownTimer({ targetTime }: { targetTime: string }) {
@@ -34,7 +55,9 @@ function CountdownTimer({ targetTime }: { targetTime: string }) {
 }
 
 export default function FacultyDashboardPage() {
+  const { isSchool, labels } = useInstitutionType();
   const [lectures, setLectures] = useState<LectureRow[]>([]);
+  const [todaySchedule, setTodaySchedule] = useState<TodayScheduleResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const now = useMemo(() => new Date(), []);
@@ -45,7 +68,9 @@ export default function FacultyDashboardPage() {
       setError("");
       try {
         const lectureData = await apiFetch<LectureRow[]>("/api/faculty/lectures");
+        const todayData = await apiFetch<TodayScheduleResponse>("/api/faculty/today-schedule");
         setLectures(lectureData);
+        setTodaySchedule(todayData);
       } catch (loadError) {
         setError(loadError instanceof Error ? loadError.message : "Unable to load dashboard");
       } finally {
@@ -77,24 +102,28 @@ export default function FacultyDashboardPage() {
   const stats = [
     {
       title: "Today's Lectures",
-      value: todaysLectures.length,
+      value: isSchool ? (todaySchedule?.periods?.length ?? 0) : todaysLectures.length,
       subtitle:
-        todaysLectures.length > 0
+        !isSchool && todaysLectures.length > 0
           ? `Next at ${new Date(todaysLectures[0].starts_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`
-          : "No lectures today",
+          : isSchool
+            ? "Today's periods"
+            : "No lectures today",
       icon: <CalendarClock size={18} />,
       color: "teal" as const,
     },
     {
       title: "Marked Attendance",
-      value: `${markedCount}/${todaysLectures.length}`,
+      value: `${markedCount}/${isSchool ? (todaySchedule?.periods?.length ?? 0) : todaysLectures.length}`,
       subtitle: "Use Attendance tab to submit",
       icon: <CheckCircle2 size={18} />,
       color: "green" as const,
     },
     {
       title: "Pending",
-      value: todaysLectures.filter((item) => new Date(item.starts_at) > now).length,
+      value: isSchool
+        ? (todaySchedule?.periods?.filter((item) => Number(item.periodNumber) > 0).length ?? 0)
+        : todaysLectures.filter((item) => new Date(item.starts_at) > now).length,
       subtitle: "Based on current time",
       icon: <Clock3 size={18} />,
       color: "amber" as const,
@@ -129,19 +158,27 @@ export default function FacultyDashboardPage() {
         </div>
       ) : null}
 
-      <SectionCard title="Today's schedule timeline" description="Subject, room, and marked attendance">
+      <SectionCard title={isSchool ? "Today's periods" : "Today's schedule timeline"} description="Subject, room, and marked attendance">
         {error ? <p className="mb-3 text-sm text-rose-700">{error}</p> : null}
         <ul className="space-y-2 text-sm text-slate-700">
-          {todaysLectures.map((lecture) => (
-            <li key={lecture.id} className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
-              <p className="font-semibold text-slate-900">{lecture.subject_name} - Room {lecture.room_name}</p>
-              <p>
-                {new Date(lecture.starts_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} - {new Date(lecture.ends_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
-              </p>
-              <p className="text-xs text-slate-600">Marked: {lecture.marked_present}/{lecture.student_count}</p>
-            </li>
-          ))}
-          {todaysLectures.length === 0 ? <li className="text-slate-600">No lectures scheduled today.</li> : null}
+          {isSchool
+            ? (todaySchedule?.periods ?? []).map((period) => (
+                <li key={period.id} className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+                  <p className="font-semibold text-slate-900">{labels.period_entity} {period.periodNumber}: {period.subjectName}</p>
+                  <p>{period.sectionName} - Room {period.roomName}</p>
+                  <p className="text-xs text-slate-600">{period.startTime || "--:--"} - {period.endTime || "--:--"}</p>
+                </li>
+              ))
+            : todaysLectures.map((lecture) => (
+                <li key={lecture.id} className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+                  <p className="font-semibold text-slate-900">{lecture.subject_name} - Room {lecture.room_name}</p>
+                  <p>
+                    {new Date(lecture.starts_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} - {new Date(lecture.ends_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                  </p>
+                  <p className="text-xs text-slate-600">Marked: {lecture.marked_present}/{lecture.student_count}</p>
+                </li>
+              ))}
+          {(isSchool ? (todaySchedule?.periods ?? []).length === 0 : todaysLectures.length === 0) ? <li className="text-slate-600">No schedule items today.</li> : null}
         </ul>
       </SectionCard>
 
