@@ -23,6 +23,24 @@ function toLegacyAttendanceStatus(status: z.infer<typeof statusEnum>) {
   return "Present";
 }
 
+async function isSchoolInstitution(collegeId: string) {
+  const supabase = getSupabaseAdmin();
+  const { data, error } = await supabase
+    .from("colleges")
+    .select("type")
+    .eq("id", collegeId)
+    .maybeSingle();
+
+  if (error) throw new Error(error.message);
+  return data?.type === "school";
+}
+
+function combineTodayIso(timeValue: string | null) {
+  if (!timeValue) return new Date().toISOString();
+  const today = new Date().toISOString().slice(0, 10);
+  return `${today}T${timeValue}`;
+}
+
 export async function GET(request: Request) {
   try {
     const ctx = await getRequestContext();
@@ -40,6 +58,63 @@ export async function GET(request: Request) {
     }
 
     const supabase = getSupabaseAdmin();
+
+    if (await isSchoolInstitution(ctx.collegeId)) {
+      const todayDate = new Date().toISOString().slice(0, 10);
+      const { data: timetableRow, error: timetableError } = await supabase
+        .from("timetable")
+        .select("id,section_id,teacher_id,start_time,end_time,period_number")
+        .eq("id", lectureId)
+        .eq("institution_id", ctx.collegeId)
+        .maybeSingle();
+
+      if (timetableError) return apiError(timetableError.message, 500);
+      if (!timetableRow) return apiError("Timetable entry not found", 404);
+      if (timetableRow.teacher_id !== ctx.userId) return apiError("Forbidden", 403);
+
+      const { data: students, error: studentsError } = await supabase
+        .from("students")
+        .select("id,name,email")
+        .eq("college_id", ctx.collegeId)
+        .eq("section_id", timetableRow.section_id)
+        .order("name", { ascending: true });
+
+      if (studentsError) return apiError(studentsError.message, 500);
+
+      let existingQuery = supabase
+        .from("school_attendance")
+        .select("student_id,status")
+        .eq("timetable_id", lectureId)
+        .eq("date", todayDate);
+
+      if (periodNumber !== null) {
+        existingQuery = existingQuery.eq("period_number", periodNumber);
+      }
+
+      const { data: existing, error: existingError } = await existingQuery;
+      if (existingError) return apiError(existingError.message, 500);
+
+      const statusByStudent = new Map<string, string>();
+      for (const row of existing ?? []) {
+        statusByStudent.set(row.student_id as string, (row.status as string)?.toLowerCase());
+      }
+
+      return apiSuccess({
+        lecture: {
+          id: timetableRow.id,
+          starts_at: combineTodayIso(timetableRow.start_time),
+          ends_at: combineTodayIso(timetableRow.end_time),
+          attendance_locked: false,
+          attendance_lock_expires_at: null,
+        },
+        roster: (students ?? []).map((student) => ({
+          id: student.id,
+          name: student.name,
+          email: student.email,
+          status: statusByStudent.get(student.id) ?? "present",
+        })),
+      });
+    }
 
     const { data: lecture, error: lectureError } = await supabase
       .from("lectures")
@@ -103,6 +178,37 @@ export async function POST(request: Request) {
 
     const body = postSchema.parse(await request.json());
     const supabase = getSupabaseAdmin();
+
+    if (await isSchoolInstitution(ctx.collegeId)) {
+      const { data: timetableRow, error: timetableError } = await supabase
+        .from("timetable")
+        .select("id,teacher_id,period_number")
+        .eq("id", body.lectureId)
+        .eq("institution_id", ctx.collegeId)
+        .maybeSingle();
+
+      if (timetableError) return apiError(timetableError.message, 500);
+      if (!timetableRow) return apiError("Timetable entry not found", 404);
+      if (timetableRow.teacher_id !== ctx.userId) return apiError("Forbidden", 403);
+
+      const payload = body.entries.map((entry) => ({
+        institution_id: ctx.collegeId,
+        timetable_id: body.lectureId,
+        student_id: entry.studentId,
+        date: body.attendanceDate,
+        period_number: body.periodNumber ?? timetableRow.period_number ?? null,
+        status: entry.status.toLowerCase(),
+        marked_by: ctx.userId,
+        override_reason: body.overrideReason ?? null,
+      }));
+
+      const { error } = await supabase.from("school_attendance").upsert(payload, {
+        onConflict: "timetable_id,student_id,date",
+      });
+
+      if (error) return apiError(error.message, 500);
+      return apiSuccess({ saved: payload.length }, 201);
+    }
 
     const { data: lecture, error: lectureError } = await supabase
       .from("lectures")
