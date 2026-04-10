@@ -11,6 +11,8 @@ const schema = z.object({
   departmentId: z.string().uuid().nullable().optional(),
   classId: z.string().uuid().nullable().optional(),
   subjectId: z.string().uuid().nullable().optional(),
+  branch: z.string().max(80).nullable().optional(),
+  joinedOn: z.string().max(40).nullable().optional(),
 });
 
 function isMissingColumnError(message: string | undefined, columnName: string) {
@@ -31,7 +33,7 @@ export async function GET(request: Request) {
     const supabase = getSupabaseAdmin();
     let query = supabase
       .from("users")
-      .select("id,name,email,role,department_id,class_id,college_id,created_at")
+      .select("id,name,email,role,department_id,class_id,branch,joined_on,college_id,created_at")
       .eq("college_id", ctx.collegeId)
       .order("created_at", { ascending: false });
 
@@ -53,6 +55,22 @@ export async function GET(request: Request) {
 
       const fallback = await fallbackQuery;
       data = (fallback.data ?? []).map((row) => ({ ...row, class_id: null }));
+      error = fallback.error;
+    }
+
+    if (error && (isMissingColumnError(error.message, "branch") || isMissingColumnError(error.message, "joined_on"))) {
+      let fallbackQuery = supabase
+        .from("users")
+        .select("id,name,email,role,department_id,class_id,college_id,created_at")
+        .eq("college_id", ctx.collegeId)
+        .order("created_at", { ascending: false });
+
+      if (roleFilter && ["HOD", "Faculty", "Student"].includes(roleFilter)) {
+        fallbackQuery = fallbackQuery.eq("role", roleFilter);
+      }
+
+      const fallback = await fallbackQuery;
+      data = (fallback.data ?? []).map((row) => ({ ...row, branch: null, joined_on: null }));
       error = fallback.error;
     }
 
@@ -227,6 +245,8 @@ export async function POST(request: Request) {
       college_id: ctx.collegeId,
       department_id: institutionType === "college" ? body.departmentId ?? null : null,
       class_id: institutionType === "school" ? body.classId ?? null : null,
+      branch: body.branch?.trim() || null,
+      joined_on: body.joinedOn || null,
       name: body.name,
       email: body.email,
       password: body.password,
@@ -271,6 +291,27 @@ export async function POST(request: Request) {
         .select("id,name,email,role,department_id,college_id")
         .single();
       data = fallback.data ? { ...fallback.data, class_id: null } : null;
+      error = fallback.error;
+    }
+
+    if (error && (isMissingColumnError(error.message, "branch") || isMissingColumnError(error.message, "joined_on"))) {
+      const fallbackBase = {
+        college_id: ctx.collegeId,
+        department_id: institutionType === "college" ? body.departmentId ?? null : null,
+        class_id: institutionType === "school" ? body.classId ?? null : null,
+        name: body.name,
+        email: body.email,
+        password: body.password,
+        role: body.role,
+      };
+
+      const fallback = await supabase
+        .from("users")
+        .insert(fallbackBase)
+        .select("id,name,email,role,department_id,class_id,college_id")
+        .single();
+
+      data = fallback.data;
       error = fallback.error;
     }
 

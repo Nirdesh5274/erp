@@ -17,6 +17,20 @@ function inr(value: number) {
   }).format(value);
 }
 
+function formatReceiptDateTime(value: string | null | undefined) {
+  const source = value ? new Date(value) : new Date();
+  return new Intl.DateTimeFormat("en-IN", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: true,
+    timeZone: "Asia/Kolkata",
+  }).format(source);
+}
+
 function renderHtml(payload: {
   schoolName: string;
   schoolAddress: string;
@@ -199,6 +213,14 @@ export async function GET(
           supabase.from("students").select("id,name,email,admission_id").eq("id", modernReceipt.student_id).maybeSingle(),
         ]);
 
+      const { data: admissionMeta } = student?.admission_id
+        ? await supabase
+            .from("admissions")
+            .select("id,roll_number")
+            .eq("id", student.admission_id)
+            .maybeSingle()
+        : { data: null };
+
       let structureDescriptionValue = "";
       if (studentFee?.fee_structure_id) {
         const structureDescription = await supabase
@@ -243,9 +265,9 @@ export async function GET(
           (modernReceipt.payload as Record<string, unknown> | null | undefined)?.receiptNumber as string ||
           payment?.receipt_number ||
           modernReceipt.id,
-        receiptDate: new Date(payment?.paid_at ?? modernReceipt.created_at ?? new Date().toISOString()).toLocaleString(),
+        receiptDate: formatReceiptDateTime(payment?.paid_at ?? modernReceipt.created_at ?? new Date().toISOString()),
         studentName: student?.name ?? "Student",
-        admissionNumber: String(student?.admission_id ?? "N/A"),
+        admissionNumber: String(admissionMeta?.roll_number ?? student?.admission_id ?? "N/A"),
         email: student?.email ?? "N/A",
         phone: "N/A",
         paymentMode: payment?.payment_mode ?? "N/A",
@@ -292,7 +314,7 @@ export async function GET(
 
     const [{ data: student }, { data: admission }] = await Promise.all([
       supabase.from("students").select("id,name,email").eq("id", fee.student_id).maybeSingle(),
-      supabase.from("admissions").select("id,phone").eq("id", fee.admission_id).maybeSingle(),
+      supabase.from("admissions").select("id,phone,roll_number").eq("id", fee.admission_id).maybeSingle(),
     ]);
 
     const college = await loadCollegeBranding(supabase, String(fee.college_id));
@@ -311,9 +333,9 @@ export async function GET(
       schoolAddress: college.location,
       schoolLogoUrl: college.logoUrl,
       receiptNumber: receipt.receipt_number ?? receipt.id,
-      receiptDate: new Date(receipt.paid_at ?? new Date().toISOString()).toLocaleString(),
+      receiptDate: formatReceiptDateTime(receipt.paid_at ?? new Date().toISOString()),
       studentName: student?.name ?? "Student",
-      admissionNumber: admission?.id ?? String(fee.admission_id ?? "N/A"),
+      admissionNumber: String(admission?.roll_number ?? admission?.id ?? fee.admission_id ?? "N/A"),
       email: student?.email ?? "N/A",
       phone: admission?.phone ?? "N/A",
       paymentMode: receipt.payment_mode ?? "N/A",

@@ -29,6 +29,8 @@ export default function AdminBlocksPage() {
   const [loading, setLoading] = useState(true);
   const [name, setName] = useState("");
   const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
   const [selectedBlockId, setSelectedBlockId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
@@ -53,27 +55,81 @@ export default function AdminBlocksPage() {
   }, []);
 
   useEffect(() => {
-    const timer = window.setTimeout(() => {
-      void load();
-    }, 0);
-
-    return () => {
-      window.clearTimeout(timer);
-    };
+    void load();
   }, [load]);
 
   const handleCreate = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setError("");
+
+    if (name.trim().length === 0) {
+      setError("Block name is required");
+      return;
+    }
+
     try {
+      setSaving(true);
       await apiFetch<BlockRow>("/api/admin/blocks", {
         method: "POST",
-        body: JSON.stringify({ name }),
+        body: JSON.stringify({ name: name.trim() }),
       });
       setName("");
       await load();
     } catch (submitError) {
       setError(submitError instanceof Error ? submitError.message : "Unable to create block");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const startEdit = (block: BlockRow) => {
+    setEditingId(block.id);
+    setName(block.name);
+  };
+
+  const cancelEdit = () => {
+    setEditingId(null);
+    setName("");
+  };
+
+  const handleUpdate = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!editingId) return;
+
+    setError("");
+    if (name.trim().length === 0) {
+      setError("Block name is required");
+      return;
+    }
+
+    try {
+      setSaving(true);
+      await apiFetch<BlockRow>("/api/admin/blocks", {
+        method: "PATCH",
+        body: JSON.stringify({ id: editingId, name: name.trim() }),
+      });
+      cancelEdit();
+      await load();
+    } catch (updateError) {
+      setError(updateError instanceof Error ? updateError.message : "Unable to update block");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleDelete = async (id: string) => {
+    if (!window.confirm("Delete this block?")) return;
+
+    setError("");
+    try {
+      setSaving(true);
+      await apiFetch<{ deleted: boolean; id: string }>(`/api/admin/blocks?id=${id}`, { method: "DELETE" });
+      if (editingId === id) cancelEdit();
+      await load();
+    } catch (deleteError) {
+      setError(deleteError instanceof Error ? deleteError.message : "Unable to delete block");
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -114,8 +170,11 @@ export default function AdminBlocksPage() {
 
   return (
     <div className="space-y-6">
-      <SectionCard title="Add Block" description="Create infrastructure blocks (A, B, C)">
-        <form onSubmit={handleCreate} className="flex flex-wrap gap-3 text-sm">
+      <SectionCard
+        title={editingId ? "Edit Block" : "Add Block"}
+        description={editingId ? "Update an existing infrastructure block" : "Create infrastructure blocks (A, B, C)"}
+      >
+        <form onSubmit={editingId ? handleUpdate : handleCreate} className="flex flex-wrap gap-3 text-sm">
           <input
             value={name}
             onChange={(e) => setName(e.target.value)}
@@ -123,7 +182,21 @@ export default function AdminBlocksPage() {
             className="rounded-xl border border-slate-300 px-3 py-2"
             required
           />
-          <button className="rounded-xl bg-teal-700 px-4 py-2 font-semibold text-white hover:bg-teal-800">Add Block</button>
+          <button
+            disabled={saving}
+            className="rounded-xl bg-teal-700 px-4 py-2 font-semibold text-white hover:bg-teal-800 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {saving ? "Saving..." : editingId ? "Update Block" : "Add Block"}
+          </button>
+          {editingId ? (
+            <button
+              type="button"
+              onClick={cancelEdit}
+              className="rounded-xl border border-slate-300 px-4 py-2 font-semibold text-slate-700 hover:bg-slate-100"
+            >
+              Cancel
+            </button>
+          ) : null}
         </form>
         {error ? <p className="mt-3 text-sm text-rose-700">{error}</p> : null}
       </SectionCard>
@@ -147,6 +220,28 @@ export default function AdminBlocksPage() {
               <p className="mt-2 text-xs text-slate-600">
                 Rooms: {rooms.filter((room) => room.block_id === item.id).length}
               </p>
+              <div className="mt-3 flex gap-2">
+                <button
+                  type="button"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    startEdit(item);
+                  }}
+                  className="rounded-lg border border-slate-300 px-2 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-100"
+                >
+                  Edit
+                </button>
+                <button
+                  type="button"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    void handleDelete(item.id);
+                  }}
+                  className="rounded-lg border border-rose-300 px-2 py-1 text-xs font-semibold text-rose-700 hover:bg-rose-50"
+                >
+                  Delete
+                </button>
+              </div>
             </button>
           ))}
         </div>

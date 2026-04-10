@@ -4,6 +4,7 @@ import { apiError, apiSuccess } from "@/lib/api";
 import { ensureRole, getRequestContext } from "@/lib/requestContext";
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 import { recalcStudentFeeTotals } from "@/lib/feeManagement";
+import { makeReceiptNumber } from "@/lib/feeManagement";
 
 const schema = z.object({
   class_id: z.string().uuid(),
@@ -11,6 +12,10 @@ const schema = z.object({
   term: z.string().max(20).default("Annual"),
   academic_year: z.string().max(20).optional(),
   admission_fee: z.number().nonnegative().default(20000),
+  paid_amount: z.number().positive(),
+  payment_mode: z.enum(["Cash", "UPI", "Online", "Card", "Bank Transfer"]).default("Cash"),
+  transaction_id: z.string().trim().optional().or(z.literal("")),
+  receipt_number: z.string().trim().optional().or(z.literal("")),
   email: z.string().email().optional().or(z.literal("")),
   forceDuplicate: z.boolean().optional(),
 });
@@ -164,6 +169,8 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
 
     const warnings: string[] = [];
     const email = (body.email?.trim() || lead.email || `${leadPhone}@student.local`).toLowerCase();
+    let createdPaymentId: string | null = null;
+    let createdReceiptId: string | null = null;
 
     try {
       // Inserts start here. After this point, avoid early returns so rollback always runs on failure.
@@ -321,6 +328,69 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
         await recalcStudentFeeTotals(supabase, fallbackStudentFee.id);
       }
 
+      if (!createdStudentFeeId) throw new Error("Student fee not created");
+
+      const { data: refreshedFee, error: refreshedFeeError } = await supabase
+        .from("student_fees")
+        .select("id,grand_total,due_total")
+        .eq("id", createdStudentFeeId)
+        .eq("college_id", ctx.collegeId)
+        .single();
+
+      if (refreshedFeeError || !refreshedFee) throw new Error(refreshedFeeError?.message ?? "Unable to load generated fee");
+
+      const dueAmount = Number(refreshedFee.due_total ?? 0);
+      if (dueAmount <= 0) {
+        throw new Error("No due amount available for admission conversion");
+      }
+
+      if (Number(body.paid_amount) > dueAmount) {
+        throw new Error(`Paid amount cannot exceed due amount (${dueAmount})`);
+      }
+
+      const receiptNumber = body.receipt_number?.trim() || makeReceiptNumber("ADM");
+
+      const { data: payment, error: paymentError } = await supabase
+        .from("payments")
+        .insert({
+          college_id: ctx.collegeId,
+          student_fee_id: createdStudentFeeId,
+          student_id: createdStudentId,
+          amount: Number(body.paid_amount),
+          payment_mode: body.payment_mode,
+          transaction_id: body.transaction_id?.trim() || null,
+          receipt_number: receiptNumber,
+          collected_by: ctx.userId,
+          notes: "Admission conversion payment",
+        })
+        .select("id")
+        .single();
+
+      if (paymentError || !payment?.id) throw new Error(paymentError?.message ?? "Unable to create admission payment");
+      createdPaymentId = payment.id;
+
+      await recalcStudentFeeTotals(supabase, createdStudentFeeId);
+
+      const { data: receipt, error: receiptError } = await supabase
+        .from("receipts")
+        .insert({
+          college_id: ctx.collegeId,
+          payment_id: payment.id,
+          student_fee_id: createdStudentFeeId,
+          student_id: createdStudentId,
+          payload: {
+            receiptNumber,
+            paymentMode: body.payment_mode,
+            transactionId: body.transaction_id?.trim() || null,
+            source: "lead_conversion",
+          },
+        })
+        .select("id")
+        .single();
+
+      if (receiptError || !receipt?.id) throw new Error(receiptError?.message ?? "Unable to create receipt");
+      createdReceiptId = receipt.id;
+
       // In school conversion, dues are tracked via student_fees/student_fee_items.
       // Avoid writing duplicate legacy admission fee rows into fees.
 
@@ -416,9 +486,19 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
         roll_number: rollNumber,
         login_email: email,
         login_password: tempPassword,
+        receipt_id: createdReceiptId,
+        receipt_url: createdReceiptId ? `/api/fees/receipt/${createdReceiptId}` : null,
         warnings,
       });
     } catch (conversionError) {
+      if (createdReceiptId) {
+        await supabase.from("receipts").delete().eq("id", createdReceiptId).eq("college_id", ctx.collegeId);
+      }
+
+      if (createdPaymentId) {
+        await supabase.from("payments").delete().eq("id", createdPaymentId).eq("college_id", ctx.collegeId);
+      }
+
       if (createdStudentFeeId) {
         await supabase.from("student_fees").delete().eq("id", createdStudentFeeId).eq("college_id", ctx.collegeId);
       }

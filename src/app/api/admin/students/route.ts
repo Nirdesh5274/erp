@@ -6,7 +6,7 @@ import { z } from "zod";
 
 const patchSchema = z.object({
   studentId: z.string().uuid().optional(),
-  action: z.enum(["regeneratePassword", "upgradeSemester", "bulkUpgradeSemester", "deactivate"]).optional(),
+  action: z.enum(["regeneratePassword", "upgradeSemester", "bulkUpgradeSemester", "deactivate", "updateDetails"]).optional(),
   slotId: z.string().uuid().optional(),
   fromSemester: z.number().int().min(1).max(12).optional(),
   targetSemester: z.number().int().min(1).max(12).optional(),
@@ -15,12 +15,20 @@ const patchSchema = z.object({
   fromSectionId: z.string().uuid().optional(),
   targetSectionId: z.string().uuid().optional(),
   targetTerm: z.string().max(20).optional(),
+  name: z.string().min(1).max(120).optional(),
+  email: z.string().email().optional(),
+  rollNumber: z.string().max(40).optional().nullable(),
+  classId: z.string().uuid().optional().nullable(),
+  sectionId: z.string().uuid().optional().nullable(),
+  term: z.string().max(20).optional().nullable(),
+  status: z.enum(["active", "inactive", "graduated"]).optional(),
 });
 
 const querySchema = z.object({
   page: z.coerce.number().int().min(1).default(1),
   limit: z.coerce.number().int().min(1).max(100).default(20),
   search: z.string().max(120).optional(),
+  departmentId: z.string().uuid().optional(),
   classId: z.string().uuid().optional(),
   sectionId: z.string().uuid().optional(),
   status: z.enum(["all", "active", "inactive", "graduated"]).default("all"),
@@ -292,6 +300,7 @@ export async function GET(request: Request) {
       page: url.searchParams.get("page") ?? 1,
       limit: url.searchParams.get("limit") ?? 20,
       search: url.searchParams.get("search") ?? undefined,
+      departmentId: url.searchParams.get("departmentId") ?? undefined,
       classId: url.searchParams.get("classId") ?? undefined,
       sectionId: url.searchParams.get("sectionId") ?? undefined,
       status: url.searchParams.get("status") ?? "all",
@@ -311,6 +320,8 @@ export async function GET(request: Request) {
       .eq("college_id", ctx.collegeId)
       .eq("institution_id", ctx.collegeId)
       .order("created_at", { ascending: false });
+
+    if (query.departmentId) studentQuery = studentQuery.eq("department_id", query.departmentId);
 
     if (isSchool) {
       if (query.classId) studentQuery = studentQuery.eq("class_id", query.classId);
@@ -343,6 +354,8 @@ export async function GET(request: Request) {
         .eq("college_id", ctx.collegeId)
         .eq("institution_id", ctx.collegeId)
         .order("created_at", { ascending: false });
+
+      if (query.departmentId) fallbackQuery = fallbackQuery.eq("department_id", query.departmentId);
 
       if (isSchool) {
         if (query.classId) fallbackQuery = fallbackQuery.eq("class_id", query.classId);
@@ -589,6 +602,68 @@ export async function PATCH(request: Request) {
 
       if (deactivateError) return apiError(deactivateError.message, 500);
       return apiSuccess({ studentId: student.id, status: "inactive" });
+    }
+
+    if (action === "updateDetails") {
+      const updatePayload: Record<string, unknown> = {};
+
+      if (body.name !== undefined) updatePayload.name = body.name.trim();
+      if (body.email !== undefined) updatePayload.email = body.email.trim().toLowerCase();
+      if (body.rollNumber !== undefined) updatePayload.roll_number = body.rollNumber?.trim() || null;
+      if (body.status !== undefined) updatePayload.status = body.status;
+
+      if (isSchool) {
+        if (body.classId !== undefined) updatePayload.class_id = body.classId ?? null;
+        if (body.sectionId !== undefined) updatePayload.section_id = body.sectionId ?? null;
+        if (body.term !== undefined) updatePayload.term = body.term ?? null;
+
+        if (body.classId && body.sectionId) {
+          const { data: section, error: sectionError } = await supabase
+            .from("sections")
+            .select("id,class_id")
+            .eq("id", body.sectionId)
+            .eq("institution_id", ctx.collegeId)
+            .maybeSingle();
+
+          if (sectionError) return apiError(sectionError.message, 500);
+          if (!section) return apiError("Selected section not found", 400);
+          if (String(section.class_id) !== String(body.classId)) {
+            return apiError("Selected section does not belong to selected class", 400);
+          }
+        }
+      }
+
+      if (Object.keys(updatePayload).length === 0) {
+        return apiError("No fields provided for update", 400);
+      }
+
+      const { data: updatedStudent, error: updateStudentError } = await supabase
+        .from("students")
+        .update(updatePayload)
+        .eq("id", student.id)
+        .eq("college_id", ctx.collegeId)
+        .select("id,name,email,roll_number,class_id,section_id,term,status")
+        .single();
+
+      if (updateStudentError) return apiError(updateStudentError.message, 500);
+
+      if (student.user_id && (body.name !== undefined || body.email !== undefined)) {
+        const userPayload: Record<string, unknown> = {};
+        if (body.name !== undefined) userPayload.name = body.name.trim();
+        if (body.email !== undefined) userPayload.email = body.email.trim().toLowerCase();
+
+        if (Object.keys(userPayload).length > 0) {
+          const { error: userUpdateError } = await supabase
+            .from("users")
+            .update(userPayload)
+            .eq("id", student.user_id)
+            .eq("college_id", ctx.collegeId);
+
+          if (userUpdateError) return apiError(userUpdateError.message, 500);
+        }
+      }
+
+      return apiSuccess(updatedStudent);
     }
 
     if (action === "upgradeSemester") {

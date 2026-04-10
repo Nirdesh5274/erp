@@ -201,15 +201,25 @@ export async function GET() {
       .slice(0, 14);
 
     const todayKey = new Date().toISOString().slice(0, 10);
+    const currentMonthKey = new Date().toISOString().slice(0, 7);
     const today = dailyMap.get(todayKey) ?? { amount: 0, count: 0 };
+
+    const revenueCollectedMtd = unifiedTransactions.reduce((sum, tx) => {
+      const txMonthKey = new Date(tx.paidAt).toISOString().slice(0, 7);
+      if (txMonthKey !== currentMonthKey) return sum;
+      return sum + tx.amount;
+    }, 0);
 
     const revenueCollected = totalRevenueLegacy + v3Collected;
     const revenueDue = totalDueLegacy + v3Due;
+    const revenueDueOutstanding = revenueDue;
 
     return apiSuccess({
       totalStudents: studentsResponse.count ?? 0,
       revenueCollected,
+      revenueCollectedMtd,
       revenueDue,
+      revenueDueOutstanding,
       attendancePercent,
       roomUsagePercent,
       totalRooms: roomsResponse.count ?? 0,

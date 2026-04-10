@@ -14,6 +14,23 @@ export default function LoginPage() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
+  const parseApiError = async (response: Response) => {
+    const contentType = response.headers.get("content-type") ?? "";
+
+    if (contentType.includes("application/json")) {
+      const payload = (await response.json()) as {
+        ok?: boolean;
+        error?: string | { message?: string };
+      };
+
+      return typeof payload.error === "string" ? payload.error : payload.error?.message;
+    }
+
+    if (response.status === 404) return "Login API endpoint not found";
+    if (response.status >= 500) return "Server error while logging in";
+    return "Invalid response from server";
+  };
+
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setError("");
@@ -27,6 +44,11 @@ export default function LoginPage() {
         },
         body: JSON.stringify({ email, password }),
       });
+
+      const contentType = response.headers.get("content-type") ?? "";
+      if (!contentType.includes("application/json")) {
+        throw new Error(await parseApiError(response));
+      }
 
       const payload = (await response.json()) as {
         ok: boolean;

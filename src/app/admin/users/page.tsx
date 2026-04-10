@@ -12,6 +12,8 @@ interface UserRow {
   email: string;
   role: "HOD" | "Faculty" | "Student";
   department_id: string | null;
+  branch?: string | null;
+  joined_on?: string | null;
   class_id?: string | null;
   className?: string | null;
   subjectNames?: string[];
@@ -50,6 +52,8 @@ export default function AdminUsersPage() {
   const [departmentId, setDepartmentId] = useState("");
   const [classId, setClassId] = useState("");
   const [subjectId, setSubjectId] = useState("");
+  const [branch, setBranch] = useState("");
+  const [joinedOn, setJoinedOn] = useState("");
   const [newSubjectName, setNewSubjectName] = useState("");
   const [subjectCreating, setSubjectCreating] = useState(false);
 
@@ -126,11 +130,15 @@ export default function AdminUsersPage() {
           departmentId: isSchool ? null : departmentId || null,
           classId: isSchool ? classId || null : null,
           subjectId: isSchool && role === "Faculty" ? subjectId || null : null,
+          branch: branch || null,
+          joinedOn: joinedOn || null,
         }),
       });
       setName("");
       setEmail("");
       setPassword("");
+      setBranch("");
+      setJoinedOn("");
       setSubjectId((current) => (isSchool && role === "Faculty" ? current : ""));
       await load();
     } catch (submitError) {
@@ -202,6 +210,21 @@ export default function AdminUsersPage() {
             className="rounded-xl border border-slate-300 px-3 py-2"
             required
           />
+          <input
+            value={branch}
+            onChange={(e) => setBranch(e.target.value)}
+            placeholder="Branch (optional)"
+            className="rounded-xl border border-slate-300 px-3 py-2"
+          />
+          <label className="space-y-1">
+            <span className="text-xs font-semibold text-slate-600">Joining Date</span>
+            <input
+              type="date"
+              value={joinedOn}
+              onChange={(e) => setJoinedOn(e.target.value)}
+              className="w-full rounded-xl border border-slate-300 px-3 py-2"
+            />
+          </label>
           <select value={role} onChange={(e) => setRole(e.target.value as "HOD" | "Faculty")} className="rounded-xl border border-slate-300 px-3 py-2">
             <option value="HOD">HOD</option>
             <option value="Faculty">Faculty</option>
@@ -286,6 +309,8 @@ export default function AdminUsersPage() {
                 ) : (
                   <p className="text-teal-700">Department: {item.department_id ? deptById.get(item.department_id) ?? "Unknown" : "—"}</p>
                 )}
+                <p className="text-slate-600">Branch: {item.branch ?? "—"}</p>
+                <p className="text-slate-600">Joined On: {item.joined_on ? new Date(item.joined_on).toLocaleDateString() : "—"}</p>
               </div>
             ))}
             {hodRows.length === 0 && !loading ? <p className="text-xs text-slate-600">No HODs yet.</p> : null}
@@ -307,6 +332,8 @@ export default function AdminUsersPage() {
                 ) : (
                   <p className="text-teal-700">Department: {item.department_id ? deptById.get(item.department_id) ?? "Unknown" : "—"}</p>
                 )}
+                <p className="text-slate-600">Branch: {item.branch ?? "—"}</p>
+                <p className="text-slate-600">Joined On: {item.joined_on ? new Date(item.joined_on).toLocaleDateString() : "—"}</p>
               </div>
             ))}
             {facultyRows.length === 0 && !loading ? <p className="text-xs text-slate-600">No faculty yet.</p> : null}

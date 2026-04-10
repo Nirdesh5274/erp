@@ -51,7 +51,6 @@ interface PeriodDraft {
 }
 
 const DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
-const PERIODS = Array.from({ length: 8 }, (_, index) => index + 1);
 
 export default function AdminTimetablePage() {
   const { isSchool } = useInstitutionType();
@@ -67,6 +66,8 @@ export default function AdminTimetablePage() {
   const [classId, setClassId] = useState("");
   const [sectionId, setSectionId] = useState("");
   const [day, setDay] = useState("Monday");
+  const [workingDays, setWorkingDays] = useState<string[]>(["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]);
+  const [periodsPerDay, setPeriodsPerDay] = useState(8);
   const [periodDrafts, setPeriodDrafts] = useState<Record<number, PeriodDraft>>({});
   const classNameById = useMemo(() => new Map(classes.map((item) => [item.id, item.name])), [classes]);
   const subjectNameById = useMemo(() => new Map(subjects.map((item) => [item.id, item.name])), [subjects]);
@@ -74,6 +75,11 @@ export default function AdminTimetablePage() {
   const classSections = useMemo(
     () => sections.filter((section) => section.classId === classId),
     [sections, classId],
+  );
+
+  const periodNumbers = useMemo(
+    () => Array.from({ length: Math.max(1, Math.min(12, periodsPerDay)) }, (_, index) => index + 1),
+    [periodsPerDay],
   );
 
   const classSubjects = useMemo(
@@ -106,7 +112,7 @@ export default function AdminTimetablePage() {
     const scopedRows = activeRows.filter((row) => row.sectionId === activeSectionId && row.day === activeDay);
     const nextDrafts: Record<number, PeriodDraft> = {};
 
-    for (const period of PERIODS) {
+    for (const period of periodNumbers) {
       const match = scopedRows.find((row) => Number(row.periodNumber) === period) ?? null;
       nextDrafts[period] = {
         subjectId: match?.subjectId ?? "",
@@ -118,7 +124,7 @@ export default function AdminTimetablePage() {
     }
 
     return nextDrafts;
-  }, []);
+  }, [periodNumbers]);
 
   const load = useCallback(async () => {
     setError("");
@@ -155,7 +161,7 @@ export default function AdminTimetablePage() {
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : "Unable to load timetable");
     }
-  }, [buildPeriodDrafts, classId, day, sectionId]);
+  }, [buildPeriodDrafts, classId, day, sectionId, periodNumbers]);
 
   useEffect(() => {
     if (!isSchool) return;
@@ -200,6 +206,23 @@ export default function AdminTimetablePage() {
       fallbackTeacherId: classTeachers[0]?.id || teachers[0]?.id,
     }));
   };
+
+  const toggleWorkingDay = (dayName: string) => {
+    setWorkingDays((current) => {
+      const exists = current.includes(dayName);
+      if (exists) {
+        const next = current.filter((item) => item !== dayName);
+        return next.length > 0 ? next : [dayName];
+      }
+      return [...current, dayName];
+    });
+  };
+
+  useEffect(() => {
+    if (!workingDays.includes(day)) {
+      setDay(workingDays[0] ?? "Monday");
+    }
+  }, [workingDays, day]);
 
   const savePeriod = async (periodNumber: number) => {
     setError("");
@@ -294,8 +317,37 @@ export default function AdminTimetablePage() {
           </label>
         </div>
 
+        <div className="mb-4 grid gap-3 md:grid-cols-2">
+          <label className="space-y-1">
+            <span className="text-xs font-semibold text-slate-600">Periods Per Day</span>
+            <input
+              type="number"
+              min={1}
+              max={12}
+              value={periodsPerDay}
+              onChange={(event) => setPeriodsPerDay(Math.max(1, Math.min(12, Number(event.target.value || 1))))}
+              className="w-full rounded-xl border border-slate-300 px-3 py-2"
+            />
+          </label>
+          <div>
+            <p className="mb-1 text-xs font-semibold text-slate-600">Working Days</p>
+            <div className="flex flex-wrap gap-2">
+              {DAYS.map((item) => (
+                <button
+                  key={`toggle-${item}`}
+                  type="button"
+                  onClick={() => toggleWorkingDay(item)}
+                  className={`rounded-lg px-3 py-1.5 text-xs font-semibold ${workingDays.includes(item) ? "bg-emerald-100 text-emerald-700" : "bg-slate-100 text-slate-500"}`}
+                >
+                  {item.slice(0, 3)}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+
         <div className="mb-4 flex flex-wrap gap-2">
-          {DAYS.map((item) => (
+          {workingDays.map((item) => (
             <button
               key={item}
               type="button"
@@ -308,7 +360,7 @@ export default function AdminTimetablePage() {
         </div>
 
         <div className="space-y-3">
-          {PERIODS.map((period) => {
+          {periodNumbers.map((period) => {
             const draft = periodDrafts[period] ?? {
               subjectId: "",
               teacherId: teachers[0]?.id ?? "",

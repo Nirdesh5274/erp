@@ -29,6 +29,8 @@ interface ConvertResult {
   roll_number: string;
   login_email: string;
   login_password: string;
+  receipt_id?: string | null;
+  receipt_url?: string | null;
   warnings?: string[];
 }
 
@@ -47,6 +49,10 @@ export function ConvertToStudentModal({ open, lead, onClose, onConverted }: Conv
   const [term, setTerm] = useState("Annual");
   const [academicYear, setAcademicYear] = useState(new Date().getFullYear() + "-" + String((new Date().getFullYear() + 1) % 100).padStart(2, "0"));
   const [admissionFee, setAdmissionFee] = useState(20000);
+  const [paidAmount, setPaidAmount] = useState(20000);
+  const [paymentMode, setPaymentMode] = useState<"Cash" | "UPI" | "Online" | "Card" | "Bank Transfer">("Cash");
+  const [transactionId, setTransactionId] = useState("");
+  const [receiptNumber, setReceiptNumber] = useState("");
   const [email, setEmail] = useState("");
   const [error, setError] = useState("");
   const [warning, setWarning] = useState("");
@@ -66,6 +72,10 @@ export function ConvertToStudentModal({ open, lead, onClose, onConverted }: Conv
     setResult(null);
     setEmail(lead.email ?? "");
     setAcademicYear(lead.academic_year ?? academicYear);
+    setPaidAmount(admissionFee);
+    setPaymentMode("Cash");
+    setTransactionId("");
+    setReceiptNumber("");
 
     const load = async () => {
       try {
@@ -113,6 +123,10 @@ export function ConvertToStudentModal({ open, lead, onClose, onConverted }: Conv
           term,
           academic_year: academicYear,
           admission_fee: admissionFee,
+          paid_amount: paidAmount,
+          payment_mode: paymentMode,
+          transaction_id: transactionId,
+          receipt_number: receiptNumber,
           email,
           forceDuplicate,
         }),
@@ -162,6 +176,16 @@ export function ConvertToStudentModal({ open, lead, onClose, onConverted }: Conv
             <p className="text-sm text-emerald-800">Roll No: {result.roll_number}</p>
             <p className="text-sm text-emerald-800">Login: {result.login_email}</p>
             <p className="text-sm text-emerald-800">Password: {result.login_password}</p>
+            {result.receipt_url ? (
+              <a
+                href={result.receipt_url}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex rounded-lg border border-emerald-300 bg-white px-3 py-1 text-xs font-semibold text-emerald-700"
+              >
+                Print Admission Receipt
+              </a>
+            ) : null}
             {warning ? <p className="text-sm text-amber-700">Warning: {warning}</p> : null}
             <div className="flex flex-wrap gap-2">
               <button onClick={() => void copyCredentials()} className="rounded-lg bg-emerald-700 px-4 py-2 text-sm font-semibold text-white">Copy Credentials</button>
@@ -215,7 +239,46 @@ export function ConvertToStudentModal({ open, lead, onClose, onConverted }: Conv
               </label>
               <label className="space-y-1 md:col-span-2">
                 <span className="text-xs font-semibold text-slate-600">Admission Fee</span>
-                <input type="number" min={0} value={admissionFee} onChange={(event) => setAdmissionFee(Number(event.target.value || 0))} className="w-full rounded-xl border border-slate-300 px-3 py-2" />
+                <input
+                  type="number"
+                  min={0}
+                  value={admissionFee}
+                  onChange={(event) => {
+                    const next = Number(event.target.value || 0);
+                    setAdmissionFee(next);
+                    if (paidAmount > next) setPaidAmount(next);
+                  }}
+                  className="w-full rounded-xl border border-slate-300 px-3 py-2"
+                />
+              </label>
+              <label className="space-y-1">
+                <span className="text-xs font-semibold text-slate-600">Paid Amount *</span>
+                <input
+                  type="number"
+                  min={1}
+                  value={paidAmount}
+                  onChange={(event) => setPaidAmount(Number(event.target.value || 0))}
+                  className="w-full rounded-xl border border-slate-300 px-3 py-2"
+                  required
+                />
+              </label>
+              <label className="space-y-1">
+                <span className="text-xs font-semibold text-slate-600">Payment Mode *</span>
+                <select value={paymentMode} onChange={(event) => setPaymentMode(event.target.value as typeof paymentMode)} className="w-full rounded-xl border border-slate-300 px-3 py-2" required>
+                  <option value="Cash">Cash</option>
+                  <option value="UPI">UPI</option>
+                  <option value="Online">Online</option>
+                  <option value="Card">Card</option>
+                  <option value="Bank Transfer">Bank Transfer</option>
+                </select>
+              </label>
+              <label className="space-y-1">
+                <span className="text-xs font-semibold text-slate-600">Transaction ID</span>
+                <input value={transactionId} onChange={(event) => setTransactionId(event.target.value)} className="w-full rounded-xl border border-slate-300 px-3 py-2" />
+              </label>
+              <label className="space-y-1">
+                <span className="text-xs font-semibold text-slate-600">Receipt No (optional)</span>
+                <input value={receiptNumber} onChange={(event) => setReceiptNumber(event.target.value)} className="w-full rounded-xl border border-slate-300 px-3 py-2" />
               </label>
             </div>
 

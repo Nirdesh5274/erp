@@ -26,10 +26,14 @@ function getClientInfo(request: Request) {
   return { ip, userAgent };
 }
 
-export async function POST(request: Request) {
-  const supabase = getSupabaseAdmin();
+function isMissingColumnError(message: string | undefined, columnName: string) {
+  const text = String(message ?? "").toLowerCase();
+  return text.includes(columnName.toLowerCase()) && (text.includes("column") || text.includes("schema cache") || text.includes("does not exist"));
+}
 
+export async function POST(request: Request) {
   try {
+    const supabase = getSupabaseAdmin();
     const body = schema.parse(await request.json());
     const { ip, userAgent } = getClientInfo(request);
 
@@ -45,16 +49,31 @@ export async function POST(request: Request) {
       return apiError("Too many attempts. Try again later.", 429);
     }
 
-    const { data: user, error } = await supabase
+    let { data: user, error } = await supabase
       .from("users")
-      .select("id, name, email, role, college_id, department_id, password, failed_login_attempts, is_locked, lock_expires_at")
+      .select("id, name, email, role, college_id, department_id, password, failed_login_attempts, is_locked, lock_expires_at, is_blocked")
       .eq("email", body.email)
       .maybeSingle();
+
+    if (error && isMissingColumnError(error.message, "is_blocked")) {
+      const fallback = await supabase
+        .from("users")
+        .select("id, name, email, role, college_id, department_id, password, failed_login_attempts, is_locked, lock_expires_at")
+        .eq("email", body.email)
+        .maybeSingle();
+
+      user = fallback.data ? { ...fallback.data, is_blocked: false } : null;
+      error = fallback.error;
+    }
 
     if (error) return apiError("Login failed", 500, error.message);
     if (!user) {
       await supabase.from("auth_logs").insert({ action: "login_failed", ip_address: ip, user_agent: userAgent, metadata: { reason: "user_not_found", email: body.email } });
       return apiError("Invalid credentials", 401);
+    }
+
+    if (user.is_blocked) {
+      return apiError("Account is blocked. Contact SuperAdmin.", 403);
     }
 
     if (user.is_locked && user.lock_expires_at && new Date(user.lock_expires_at) > new Date()) {
@@ -104,7 +123,17 @@ export async function POST(request: Request) {
     }
 
     // Successful login: reset counters
-    await supabase.from("users").update({ failed_login_attempts: 0, is_locked: false, lock_expires_at: null, last_login_at: new Date().toISOString() }).eq("id", user.id);
+    const loginUpdate = await supabase
+      .from("users")
+      .update({ failed_login_attempts: 0, is_locked: false, lock_expires_at: null, last_login_at: new Date().toISOString() })
+      .eq("id", user.id);
+
+    if (loginUpdate.error && isMissingColumnError(loginUpdate.error.message, "last_login_at")) {
+      await supabase
+        .from("users")
+        .update({ failed_login_attempts: 0, is_locked: false, lock_expires_at: null })
+        .eq("id", user.id);
+    }
 
     let institutionType: "college" | "school" = "college";
     if (user.college_id) {

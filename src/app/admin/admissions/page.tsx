@@ -477,6 +477,7 @@ function CollegeAdmissionsFallback() {
   const [studentName, setStudentName] = useState("");
   const [email, setEmail] = useState("");
   const [phone, setPhone] = useState("");
+  const [preferredBranch, setPreferredBranch] = useState("");
   const [feeAmount, setFeeAmount] = useState(20000);
   const [currentSemester, setCurrentSemester] = useState(1);
   const [error, setError] = useState("");
@@ -520,6 +521,7 @@ function CollegeAdmissionsFallback() {
           studentName,
           email,
           phone,
+          preferredBranch,
           currentSemester,
           feeAmount,
         }),
@@ -527,6 +529,7 @@ function CollegeAdmissionsFallback() {
       setStudentName("");
       setEmail("");
       setPhone("");
+      setPreferredBranch("");
       await load();
     } catch (submitError) {
       setError(submitError instanceof Error ? submitError.message : "Unable to create admission");
@@ -552,6 +555,7 @@ function CollegeAdmissionsFallback() {
           <input value={studentName} onChange={(event) => setStudentName(event.target.value)} placeholder="Student Name" className="rounded-xl border border-slate-300 px-3 py-2" required />
           <input type="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="Student Email" className="rounded-xl border border-slate-300 px-3 py-2" required />
           <input value={phone} onChange={(event) => setPhone(event.target.value)} placeholder="Phone" className="rounded-xl border border-slate-300 px-3 py-2" />
+          <input value={preferredBranch} onChange={(event) => setPreferredBranch(event.target.value)} placeholder="Preferred Branch (optional)" className="rounded-xl border border-slate-300 px-3 py-2" />
           <input type="number" min={0} value={feeAmount} onChange={(event) => setFeeAmount(Number(event.target.value || 0))} placeholder="Admission Fee" className="rounded-xl border border-slate-300 px-3 py-2" required />
           <select value={currentSemester} onChange={(event) => setCurrentSemester(Number(event.target.value))} className="rounded-xl border border-slate-300 px-3 py-2" required>
             {Array.from({ length: 12 }, (_, index) => index + 1).map((semester) => (

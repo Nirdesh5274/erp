@@ -14,6 +14,14 @@ export async function apiFetch<T>(input: string, init?: RequestInit): Promise<T>
   };
 
   const response = await fetch(input, { ...init, headers, credentials: "include" });
+  const contentType = response.headers.get("content-type") ?? "";
+  if (!contentType.includes("application/json")) {
+    if (response.status === 404) throw new Error("API endpoint not found");
+    if (response.status === 401) throw new Error("Unauthorized");
+    if (response.status >= 500) throw new Error("Server error");
+    throw new Error("Invalid response from server");
+  }
+
   const json = (await response.json()) as ApiEnvelope<T>;
 
   if (!response.ok || !json.ok || typeof json.data === "undefined") {

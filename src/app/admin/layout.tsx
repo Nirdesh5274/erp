@@ -35,7 +35,12 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
     { href: "/admin/students", label: "Students", icon: GraduationCap },
     { href: "/admin/fees", label: "Fees", icon: ReceiptText },
     { href: "/admin/fee-structures", label: "Fee Structures", icon: ClipboardPenLine },
-    ...(isCollege ? [{ href: "/admin/slots", label: "Schedule", icon: CalendarClock }] : []),
+    ...(isCollege
+      ? [
+          { href: "/admin/slots", label: "Slots", icon: CalendarClock },
+          { href: "/admin/schedule", label: "Schedule", icon: CalendarDays },
+        ]
+      : []),
     ...(isSchool ? [{ href: "/admin/timetable", label: "Timetable", icon: CalendarDays }] : []),
     { href: "/admin/monitoring", label: "Monitoring", icon: MonitorPlay },
     { href: "/admin/attendance", label: "Attendance", icon: ClipboardList },

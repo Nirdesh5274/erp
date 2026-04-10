@@ -100,11 +100,55 @@ async function validateSchoolTimetableAssignment(params: {
   return { ok: true as const };
 }
 
+async function ensureHodCanManageSection(params: {
+  userId: string | null;
+  institutionId: string;
+  sectionId: string;
+}) {
+  const { userId, institutionId, sectionId } = params;
+  if (!userId) return { ok: false as const, status: 400, message: "HOD user context missing" };
+
+  const supabase = getSupabaseAdmin();
+  const [{ data: hodRow, error: hodError }, { data: section, error: sectionError }] = await Promise.all([
+    supabase
+      .from("users")
+      .select("id,class_id")
+      .eq("id", userId)
+      .eq("college_id", institutionId)
+      .maybeSingle(),
+    supabase
+      .from("sections")
+      .select("id,class_id")
+      .eq("id", sectionId)
+      .eq("institution_id", institutionId)
+      .maybeSingle(),
+  ]);
+
+  if (hodError) {
+    const text = hodError.message.toLowerCase();
+    if (!(text.includes("class_id") && (text.includes("column") || text.includes("schema cache")))) {
+      throw new Error(hodError.message);
+    }
+  }
+  if (sectionError) throw new Error(sectionError.message);
+  if (!section) return { ok: false as const, status: 404, message: "Section not found" };
+
+  if (!hodError) {
+    const hodClassId = hodRow?.class_id ?? null;
+    if (!hodClassId) return { ok: false as const, status: 400, message: "HOD class context missing" };
+    if (String(hodClassId) !== String(section.class_id)) {
+      return { ok: false as const, status: 403, message: "HOD can only manage timetable for own class" };
+    }
+  }
+
+  return { ok: true as const };
+}
+
 export async function PATCH(request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const { id } = await params;
     const ctx = await getRequestContext();
-    if (!ensureRole(ctx.role, ["Admin"])) return apiError("Forbidden", 403);
+    if (!ensureRole(ctx.role, ["Admin", "HOD"])) return apiError("Forbidden", 403);
     const institution = await getInstitutionContext(ctx);
     const institutionId = institution.institutionId;
     if (institution.institutionType !== "school") return apiError("Timetable is available only for school mode", 400);
@@ -137,6 +181,15 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
     if (!existing) return apiError("Timetable entry not found", 404);
 
     const finalSectionId = (updatePayload.section_id as string | undefined) ?? (existing.section_id as string);
+        if (ctx.role === "HOD") {
+          const canManage = await ensureHodCanManageSection({
+            userId: ctx.userId ?? null,
+            institutionId,
+            sectionId: finalSectionId,
+          });
+          if (!canManage.ok) return apiError(canManage.message, canManage.status);
+        }
+
     const finalSubjectId = (updatePayload.subject_id as string | null | undefined) ?? (existing.subject_id as string | null);
     const finalTeacherId = (updatePayload.teacher_id as string | undefined) ?? (existing.teacher_id as string);
     const finalDay = (updatePayload.day as string | undefined) ?? (existing.day as string);
@@ -238,12 +291,32 @@ export async function DELETE(_request: Request, { params }: { params: Promise<{ 
   try {
     const { id } = await params;
     const ctx = await getRequestContext();
-    if (!ensureRole(ctx.role, ["Admin"])) return apiError("Forbidden", 403);
+    if (!ensureRole(ctx.role, ["Admin", "HOD"])) return apiError("Forbidden", 403);
     const institution = await getInstitutionContext(ctx);
     const institutionId = institution.institutionId;
     if (institution.institutionType !== "school") return apiError("Timetable is available only for school mode", 400);
 
     const supabase = getSupabaseAdmin();
+
+    if (ctx.role === "HOD") {
+      const { data: existing, error: existingError } = await supabase
+        .from("timetable")
+        .select("id,section_id")
+        .eq("id", id)
+        .eq("institution_id", institutionId)
+        .maybeSingle();
+
+      if (existingError) return apiError(existingError.message, 500);
+      if (!existing) return apiError("Timetable entry not found", 404);
+
+      const canManage = await ensureHodCanManageSection({
+        userId: ctx.userId ?? null,
+        institutionId,
+        sectionId: String(existing.section_id),
+      });
+      if (!canManage.ok) return apiError(canManage.message, canManage.status);
+    }
+
     const { error } = await supabase
       .from("timetable")
       .delete()

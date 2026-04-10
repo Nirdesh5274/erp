@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import {
   AlertTriangle,
   CalendarDays,
@@ -212,6 +213,7 @@ function SummaryCards({
 
 export default function AdminFeesPage() {
   const { isSchool } = useInstitutionType();
+  const searchParams = useSearchParams();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
@@ -236,20 +238,35 @@ export default function AdminFeesPage() {
   const [adjustTypeByFee, setAdjustTypeByFee] = useState<Record<string, "discount" | "fine" | "extra">>({});
   const [adjustAmountByFee, setAdjustAmountByFee] = useState<Record<string, number>>({});
 
+  const preselectedTargetId = searchParams.get(isSchool ? "classId" : "slotId") ?? "";
+  const preselectedStudentId = searchParams.get("studentId") ?? "";
+
   const loadTargets = useCallback(async () => {
     if (isSchool) {
       const classRows = await apiFetch<Array<{ id: string; name: string }>>("/api/admin/classes");
       const classTargets = classRows.map((row) => ({ id: row.id, name: row.name }));
       setTargets(classTargets);
-      if (!selectedTargetId && classTargets.length > 0) setSelectedTargetId(classTargets[0].id);
+      if (!selectedTargetId && classTargets.length > 0) {
+        if (preselectedTargetId && classTargets.some((item) => item.id === preselectedTargetId)) {
+          setSelectedTargetId(preselectedTargetId);
+        } else {
+          setSelectedTargetId(classTargets[0].id);
+        }
+      }
       return;
     }
 
     const slotRows = await apiFetch<Array<{ id: string; course: string }>>("/api/admin/slots");
     const slotTargets = slotRows.map((row) => ({ id: row.id, name: row.course }));
     setTargets(slotTargets);
-    if (!selectedTargetId && slotTargets.length > 0) setSelectedTargetId(slotTargets[0].id);
-  }, [isSchool, selectedTargetId]);
+    if (!selectedTargetId && slotTargets.length > 0) {
+      if (preselectedTargetId && slotTargets.some((item) => item.id === preselectedTargetId)) {
+        setSelectedTargetId(preselectedTargetId);
+      } else {
+        setSelectedTargetId(slotTargets[0].id);
+      }
+    }
+  }, [isSchool, preselectedTargetId, selectedTargetId]);
 
   const loadTargetStudents = useCallback(async (targetId: string) => {
     if (!targetId) return setSlotStudents([]);
@@ -302,9 +319,13 @@ export default function AdminFeesPage() {
 
   useEffect(() => {
     if (!selectedStudentId && studentsForUI.length > 0) {
-      setSelectedStudentId(studentsForUI[0].id);
+      if (preselectedStudentId && studentsForUI.some((student) => student.id === preselectedStudentId)) {
+        setSelectedStudentId(preselectedStudentId);
+      } else {
+        setSelectedStudentId(studentsForUI[0].id);
+      }
     }
-  }, [selectedStudentId, studentsForUI]);
+  }, [preselectedStudentId, selectedStudentId, studentsForUI]);
 
   useEffect(() => {
     const run = async () => {

@@ -25,7 +25,7 @@ export default function AdminSlotsPage() {
 
   const [course, setCourse] = useState("");
   const [departmentId, setDepartmentId] = useState("");
-  const [totalSeats, setTotalSeats] = useState(0);
+  const [totalSeats, setTotalSeats] = useState("");
 
   const deptById = useMemo(() => new Map(departments.map((item) => [item.id, item.name])), [departments]);
 
@@ -45,25 +45,24 @@ export default function AdminSlotsPage() {
   }, []);
 
   useEffect(() => {
-    const timer = window.setTimeout(() => {
-      void load();
-    }, 0);
-
-    return () => {
-      window.clearTimeout(timer);
-    };
+    void load();
   }, [load]);
 
   const handleCreate = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setError("");
+    const parsedSeats = Number(totalSeats);
+    if (!Number.isFinite(parsedSeats) || parsedSeats < 0) {
+      setError("Total seats must be 0 or greater");
+      return;
+    }
     try {
       await apiFetch<SlotRow>("/api/admin/slots", {
         method: "POST",
-        body: JSON.stringify({ departmentId, course, totalSeats }),
+        body: JSON.stringify({ departmentId, course, totalSeats: parsedSeats }),
       });
       setCourse("");
-      setTotalSeats(0);
+      setTotalSeats("");
       await load();
     } catch (submitError) {
       setError(submitError instanceof Error ? submitError.message : "Unable to create slot");
@@ -81,7 +80,7 @@ export default function AdminSlotsPage() {
             ))}
           </select>
           <input value={course} onChange={(e) => setCourse(e.target.value)} placeholder="Course (e.g. BCA)" className="rounded-xl border border-slate-300 px-3 py-2" required />
-          <input type="number" min={0} value={totalSeats} onChange={(e) => setTotalSeats(Number(e.target.value))} placeholder="Total seats" className="rounded-xl border border-slate-300 px-3 py-2" required />
+          <input type="number" min={0} value={totalSeats} onChange={(e) => setTotalSeats(e.target.value)} placeholder="Total seats" className="rounded-xl border border-slate-300 px-3 py-2" required />
           <button className="rounded-xl bg-teal-700 px-4 py-2 font-semibold text-white hover:bg-teal-800">Add Slot</button>
         </form>
         {error ? <p className="mt-3 text-sm text-rose-700">{error}</p> : null}

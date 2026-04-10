@@ -14,6 +14,7 @@ const schema = z.object({
   email: z.string().email(),
   phone: z.string().regex(/^\d{10}$/, "Phone number must be exactly 10 digits").optional().nullable(),
   currentSemester: z.number().int().min(1).max(12).optional(),
+  preferredBranch: z.string().max(80).optional().nullable(),
   feeAmount: z.number().nonnegative(),
 });
 
@@ -242,6 +243,7 @@ export async function POST(request: Request) {
     const normalizedEmail = body.email.trim().toLowerCase();
     const normalizedPhone = body.phone?.trim() || null;
     const normalizedSemester = body.currentSemester ?? 1;
+    const preferredBranch = body.preferredBranch?.trim() || null;
 
     const { data: existingAdmissionByEmail, error: existingAdmissionByEmailError } = await supabase
       .from("admissions")
@@ -452,6 +454,18 @@ export async function POST(request: Request) {
       }
     }
 
+    if (preferredBranch && admission?.admission_id) {
+      const { error: admissionBranchError } = await supabase
+        .from("admissions")
+        .update({ branch_preference: preferredBranch })
+        .eq("id", admission.admission_id)
+        .eq("college_id", institutionId);
+
+      if (admissionBranchError && !admissionBranchError.message.toLowerCase().includes("branch_preference")) {
+        return apiError(admissionBranchError.message, 400);
+      }
+    }
+
     if (admission?.student_id) {
       const { error: studentSemesterError } = await supabase
         .from("students")
@@ -461,6 +475,18 @@ export async function POST(request: Request) {
 
       if (studentSemesterError && !isMissingCurrentSemesterColumnError(studentSemesterError.message)) {
         return apiError(studentSemesterError.message, 400);
+      }
+    }
+
+    if (preferredBranch && admission?.student_id) {
+      const { error: studentBranchError } = await supabase
+        .from("students")
+        .update({ branch_preference: preferredBranch })
+        .eq("id", admission.student_id)
+        .eq("college_id", institutionId);
+
+      if (studentBranchError && !studentBranchError.message.toLowerCase().includes("branch_preference")) {
+        return apiError(studentBranchError.message, 400);
       }
     }
 

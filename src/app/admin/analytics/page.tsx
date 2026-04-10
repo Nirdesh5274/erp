@@ -87,6 +87,10 @@ interface ChartPoint {
   secondary?: number;
 }
 
+type PagedRows<T> = {
+  rows?: T[];
+};
+
 const palette = ["#0ea5e9", "#22c55e", "#f59e0b", "#ef4444", "#a855f7", "#64748b"];
 
 export default function AdminAnalyticsPage() {
@@ -100,29 +104,43 @@ export default function AdminAnalyticsPage() {
   const [monitorRows, setMonitorRows] = useState<RoomMonitorRow[]>([]);
   const [error, setError] = useState<string | null>(null);
 
+  const normalizeRows = <T,>(payload: T[] | PagedRows<T>) => {
+    if (Array.isArray(payload)) return payload;
+    return Array.isArray(payload.rows) ? payload.rows : [];
+  };
+
   useEffect(() => {
     const load = async () => {
       setError(null);
       try {
-        const [reportData, attendanceData, alertsData, studentsData, departmentsData, admissionsData, feesData, monitorData] = await Promise.all([
+        const [reportData, attendanceData, alertsData, studentsData, departmentsData, admissionsData, feesData, monitorData] = await Promise.allSettled([
           apiFetch<ReportSummary>("/api/admin/reports"),
           apiFetch<AttendanceSummary>("/api/admin/attendance/summary"),
           apiFetch<AlertsResponse>("/api/admin/notifications"),
-          apiFetch<StudentRow[]>("/api/admin/students"),
+          apiFetch<StudentRow[] | PagedRows<StudentRow>>("/api/admin/students"),
           apiFetch<DepartmentRow[]>("/api/admin/departments"),
           apiFetch<AdmissionRow[]>("/api/admin/admissions"),
           apiFetch<FeeRow[]>("/api/admin/fees"),
           apiFetch<RoomMonitorRow[]>("/api/admin/class-monitor"),
         ]);
 
-        setSummary(reportData);
-        setAttendance(attendanceData);
-        setAlerts(alertsData.alerts);
-        setStudents(studentsData);
-        setDepartments(departmentsData);
-        setAdmissions(admissionsData);
-        setFees(feesData);
-        setMonitorRows(monitorData);
+        if (reportData.status === "fulfilled") setSummary(reportData.value);
+        if (attendanceData.status === "fulfilled") setAttendance(attendanceData.value);
+        if (alertsData.status === "fulfilled") setAlerts(alertsData.value.alerts ?? []);
+        if (studentsData.status === "fulfilled") setStudents(normalizeRows(studentsData.value));
+        if (departmentsData.status === "fulfilled") setDepartments(departmentsData.value);
+        if (admissionsData.status === "fulfilled") setAdmissions(admissionsData.value);
+        if (feesData.status === "fulfilled") setFees(feesData.value);
+        if (monitorData.status === "fulfilled") setMonitorRows(monitorData.value);
+
+        const failures = [reportData, attendanceData, alertsData, studentsData, departmentsData, admissionsData, feesData, monitorData]
+          .filter((item) => item.status === "rejected")
+          .map((item) => (item as PromiseRejectedResult).reason);
+
+        if (failures.length > 0) {
+          const first = failures[0];
+          setError(first instanceof Error ? first.message : "Some analytics blocks could not load");
+        }
       } catch (loadError) {
         setError(loadError instanceof Error ? loadError.message : "Unable to load analytics");
       }

@@ -90,6 +90,50 @@ async function validateSchoolTimetableAssignment(params: {
   return { ok: true as const };
 }
 
+async function ensureHodCanManageSection(params: {
+  userId: string | null;
+  institutionId: string;
+  sectionId: string;
+}) {
+  const { userId, institutionId, sectionId } = params;
+  if (!userId) return { ok: false as const, status: 400, message: "HOD user context missing" };
+
+  const supabase = getSupabaseAdmin();
+  const [{ data: hodRow, error: hodError }, { data: section, error: sectionError }] = await Promise.all([
+    supabase
+      .from("users")
+      .select("id,class_id")
+      .eq("id", userId)
+      .eq("college_id", institutionId)
+      .maybeSingle(),
+    supabase
+      .from("sections")
+      .select("id,class_id")
+      .eq("id", sectionId)
+      .eq("institution_id", institutionId)
+      .maybeSingle(),
+  ]);
+
+  if (hodError) {
+    const text = hodError.message.toLowerCase();
+    if (!(text.includes("class_id") && (text.includes("column") || text.includes("schema cache")))) {
+      throw new Error(hodError.message);
+    }
+  }
+  if (sectionError) throw new Error(sectionError.message);
+  if (!section) return { ok: false as const, status: 404, message: "Section not found" };
+
+  if (!hodError) {
+    const hodClassId = hodRow?.class_id ?? null;
+    if (!hodClassId) return { ok: false as const, status: 400, message: "HOD class context missing" };
+    if (String(hodClassId) !== String(section.class_id)) {
+      return { ok: false as const, status: 403, message: "HOD can only manage timetable for own class" };
+    }
+  }
+
+  return { ok: true as const };
+}
+
 export async function GET(request: Request) {
   try {
     const ctx = await getRequestContext();
@@ -139,7 +183,7 @@ export async function GET(request: Request) {
 export async function POST(request: Request) {
   try {
     const ctx = await getRequestContext();
-    if (!ensureRole(ctx.role, ["Admin"])) return apiError("Forbidden", 403);
+    if (!ensureRole(ctx.role, ["Admin", "HOD"])) return apiError("Forbidden", 403);
     const institution = await getInstitutionContext(ctx);
     const institutionId = institution.institutionId;
 
@@ -149,6 +193,15 @@ export async function POST(request: Request) {
 
     const body = timetableCreateSchema.parse(await request.json());
     const supabase = getSupabaseAdmin();
+
+    if (ctx.role === "HOD") {
+      const canManage = await ensureHodCanManageSection({
+        userId: ctx.userId ?? null,
+        institutionId,
+        sectionId: body.sectionId,
+      });
+      if (!canManage.ok) return apiError(canManage.message, canManage.status);
+    }
 
     const validation = await validateSchoolTimetableAssignment({
       institutionId,
