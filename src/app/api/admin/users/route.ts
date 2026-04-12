@@ -54,7 +54,12 @@ export async function GET(request: Request) {
       }
 
       const fallback = await fallbackQuery;
-      data = (fallback.data ?? []).map((row) => ({ ...row, class_id: null }));
+      data = (fallback.data ?? []).map((row) => ({
+        ...row,
+        class_id: null,
+        branch: null,
+        joined_on: null,
+      }));
       error = fallback.error;
     }
 

@@ -91,6 +91,7 @@ export async function POST(request: Request) {
     }
 
     if (collegeError) return apiError(collegeError.message, 500);
+    if (!college) return apiError("College creation returned no data", 500);
 
     const adminPayload: Record<string, unknown> = {
       college_id: college.id,
